@@ -26,3 +26,11 @@ results/
 .DS_Store
 core.*
 lightning_logs/
+
+# Local project notes / QA artifacts (keep the PDFs + md, drop bulky renders/src)
+Project_Notes/pkg/
+Project_Notes/proposal/pdf-qa*/
+
+# Local indexer cache
+.ua/
+**/.ua/
