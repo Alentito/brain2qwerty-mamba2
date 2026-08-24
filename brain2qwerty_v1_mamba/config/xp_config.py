@@ -59,8 +59,10 @@ def experiment_config(
     study = {
         "name": "Pinet2024Meg",
         "path": STUDY_PATH,
-        "infra": {"folder": CACHE},
-        "infra_timelines": {"folder": CACHE, "cluster": None},
+        # mode="retry": recompute steps whose previous run failed (cached
+        # error) — e.g. study scan ran before the raw data was extracted.
+        "infra": {"folder": CACHE, "mode": "retry"},
+        "infra_timelines": {"folder": CACHE, "cluster": None, "mode": "retry"},
     }
     if timeline_query:
         study["query"] = timeline_query
