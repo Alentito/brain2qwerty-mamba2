@@ -6,7 +6,7 @@
 
 """Nemotron-H-style hybrid Mamba-2 / attention sequence stack (Brain2Qwerty V3).
 
-This module provides ``MambaHybrid``, a drop-in replacement for the
+This module provides ``MambaHybridCore``, a drop-in replacement for the
 ``TransformerEncoder`` / ``Conformer`` sequence core used by
 ``neuraltrain.models.conv_transformer.ConvTransformerModel``: it builds an
 ``nn.Module`` with a ``forward`` of signature ``(B, T, D) -> (B, T, D)`` from a
@@ -325,12 +325,12 @@ class HybridMambaEncoder(nn.Module):
 
 
 # --------------------------------------------------------------------------- #
-# Config (neuraltrain BaseModelConfig; registered under name="MambaHybrid")
+# Config (neuraltrain BaseModelConfig; registered under name="MambaHybridCore")
 # --------------------------------------------------------------------------- #
-class MambaHybrid(BaseModelConfig):
+class MambaHybridCore(BaseModelConfig):
     """Config for :class:`HybridMambaEncoder` (Nemotron-H-style hybrid stack).
 
-    Use as the ``transformer_config`` of ``ConvMambaHybrid``; ``build(dim)``
+    Use as the ``transformer_config`` of ``ConvMambaEncoder``; ``build(dim)``
     returns a module with ``forward: (B, T, D) -> (B, T, D)``.
 
     Parameters

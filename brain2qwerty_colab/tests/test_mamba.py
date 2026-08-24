@@ -8,7 +8,7 @@
 
 Run on the cluster (or any machine with the b2q environment):
 
-    pytest brain2qwerty_v3/tests/test_mamba.py -v
+    pytest brain2qwerty_colab/tests/test_mamba.py -v
 
 The parity test compares our pure-PyTorch ``Mamba2Mixer`` against the
 HuggingFace reference implementation (``transformers`` >= 4.45, already in
@@ -21,10 +21,10 @@ import inspect
 import pytest
 import torch
 
-from brain2qwerty_v3.mamba import (
+from brain2qwerty_colab.mamba import (
     HybridMambaEncoder,
     Mamba2Mixer,
-    MambaHybrid,
+    MambaHybridCore,
 )
 
 
@@ -75,7 +75,7 @@ def test_stack_shapes_and_backward():
 
 def test_config_build():
     """The pydantic config builds the stack the way neuraltrain cores do."""
-    cfg = MambaHybrid(n_layer=8, attention_every=4, heads=4)
+    cfg = MambaHybridCore(n_layer=8, attention_every=4, heads=4)
     stack = cfg.build(dim=256)
     assert isinstance(stack, HybridMambaEncoder)
     y = stack(torch.randn(B, T, 256))

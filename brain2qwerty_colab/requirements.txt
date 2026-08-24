@@ -1,0 +1,41 @@
+# Combined Brain2Qwerty pipeline — dependencies for Colab/Kaggle.
+# torch / torchaudio / torchvision are preinstalled on Colab and Kaggle images;
+# install them manually on a bare environment (torch==2.6.0, torchaudio==2.6.0).
+
+# Lab packages (public PyPI)
+neuralset==0.2.2
+neuraltrain==0.2.2
+neuralfetch==0.2.2
+exca==0.5.22
+submitit==1.5.3
+
+# Deep learning core
+lightning==2.5.2
+torchmetrics==1.7.3
+x-transformers==2.4.9
+
+# LLM stack
+transformers==4.52.4
+peft==0.18.1
+
+# Scientific / data
+numpy==2.2.6
+pandas==2.2.3
+scipy==1.14.1
+scikit-learn==1.8.0
+pydantic==2.12.5
+regex
+tqdm
+pyyaml
+
+# Neuro I/O (study definitions / data onboarding)
+mne==1.11.0
+dtw-python==1.7.4
+
+# Metrics / text
+edit_distance==1.0.7
+Levenshtein==0.27.1
+g2p_en==2.1.0
+
+# Dataset download (gated HF repo)
+huggingface_hub

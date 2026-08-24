@@ -4,6 +4,14 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""Shared helpers for the combined (V1-preprocessing + V3-architecture) pipeline.
+
+Self-contained: everything V3 previously imported from ``brain2qwerty_v1`` /
+``brain2qwerty_v2`` (participant bookkeeping, 2D channel positions) is inlined
+here under collision-free names so this package can be imported next to the
+other versions in one process (exca registers config classes globally by name).
+"""
+
 import os
 import typing as tp
 
@@ -14,6 +22,8 @@ import torch.nn.functional as F
 
 import neuralset as ns
 from neuralset.extractors import BaseExtractor
+from neuralset.extractors.base import BaseStatic
+from neuralset.extractors.neuro import ChannelPositions as _ChannelPositions
 
 # Character vocabulary for the CTC head: a..z plus space ("&"); the blank
 # symbol ("-") is class 0.
@@ -85,7 +95,71 @@ def apply_jitter(
     return data[:, int(jitter_amount) :]
 
 
-# --- Hard DTW for word-level contrastive matching --------------------------
+# --- SpanishBCBL participant bookkeeping (from V1) ---------------------------
+# Recover the 19 unique MEG participants by dropping the no-keyboard controls
+# and one excluded subject (metallic implant), then merging recording ids that
+# belong to the same person.
+CONTROL_SUBJECTS = {
+    "Pinet2024Meg/S11122024",
+    "Pinet2024Meg/S12122024",
+    "Pinet2024Meg/S26112024",
+    "Pinet2024Meg/S27112024",
+    "Pinet2024Meg/S28112024",
+}
+EXCLUDED_SUBJECTS = {"Pinet2024Meg/S23"}
+SUBJECT_MERGE = {
+    "Pinet2024Meg/S18": "Pinet2024Meg/S1",
+    "Pinet2024Meg/S14": "Pinet2024Meg/S4",
+    "Pinet2024Meg/S10": "Pinet2024Meg/S5",
+    "Pinet2024Meg/S21": "Pinet2024Meg/S5",
+}
+
+
+def select_participants(events):
+    """Keep the 19 unique SpanishBCBL participants: drop control/excluded subjects
+    and merge duplicate recordings (the ``subject`` column stays a string)."""
+    import pandas as pd
+
+    keep = ~events["subject"].isin(CONTROL_SUBJECTS | EXCLUDED_SUBJECTS)
+    events = events[keep].copy()
+    events["subject"] = events["subject"].replace(SUBJECT_MERGE)
+    return events
+
+
+def normalize_subject_id(subject: str | int) -> str:
+    """Normalise a subject reference to the canonical ``Pinet2024Meg/S<n>`` form.
+
+    Accepts ``"S1"``, ``"Pinet2024Meg/S1"``, ``1`` or ``"1"`` (after V1's merge
+    rules are applied, so ``"S18"`` resolves to ``"Pinet2024Meg/S1"``).
+    """
+    s = str(subject).strip()
+    if not s:
+        raise ValueError("empty subject id")
+    if s.startswith("Pinet2024Meg/"):
+        full = s
+    else:
+        s = s.lstrip("Ss")
+        full = f"Pinet2024Meg/S{int(s)}"
+    # apply the duplicate-recording merge so S18/S14/S10/S21 resolve correctly
+    return SUBJECT_MERGE.get(full, full)
+
+
+# --- Channel positions (paper's 2D MEG layout, from V1) ----------------------
+class MegChannelPositions2D(_ChannelPositions):
+    """Re-enable 2D channel positions for MEG to match the paper."""
+
+    def model_post_init(self, log__: tp.Any) -> None:
+        BaseStatic.model_post_init(self, log__)
+        if self.neuro is not None:
+            if self.event_types not in {"MneRaw", self.neuro.event_types}:
+                raise ValueError(
+                    f"event_types={self.event_types} must match "
+                    f"neuro.event_types={self.neuro.event_types}."
+                )
+            self._neuro = self.neuro
+
+
+# --- Hard DTW for word-level contrastive matching -----------------------------
 @torch.no_grad()
 def hard_dtw_path(cost: torch.Tensor) -> list[tuple[int, int]]:
     """Standard DTW with backtracking; returns a monotonic alignment path."""
@@ -125,7 +199,7 @@ def dtw_matched_pairs(
     return list(matched.items())
 
 
-# --- Prediction CSV helpers (CER / WER / SemER) ----------------------------
+# --- Prediction CSV helpers (CER / WER / SemER) -------------------------------
 def _encode_sentences(sentences: list[str], tok, mdl, batch_size: int = 64) -> np.ndarray:
     all_embs = []
     for i in range(0, len(sentences), batch_size):
@@ -197,7 +271,7 @@ def compute_sample_metrics(
     return rows
 
 
-# --- CTC label <-> text helpers --------------------------------------------
+# --- CTC label <-> text helpers ------------------------------------------------
 def label_to_text(ids: list[int]) -> str:
     """Map a CTC target id sequence to text ('&' -> space)."""
     chars = [letters_withblank[i] for i in ids if 0 < i < len(letters_withblank)]
@@ -221,13 +295,7 @@ def ctc_greedy_decode(ctc_logits: torch.Tensor) -> list[str]:
     return texts
 
 
-# --- Channel positions -----------------------------------------------------
-# Aliased from V1: exca's discriminated-model registry is global by class name,
-# so a second ``ChannelPositions2D`` class here would collide with V1's.
-from brain2qwerty_v1.utils import ChannelPositions2D  # noqa: E402  # alias
-
-
-# --- Data / experiment helpers ---------------------------------------------
+# --- Data / experiment helpers --------------------------------------------------
 def accelerator(devices: int) -> tuple[str, int]:
     """Return (accelerator, n_devices), capped to the available GPUs."""
     if torch.cuda.is_available():
@@ -255,7 +323,7 @@ def prepare_word_embeddings(data, word_extractor_config) -> dict[str, list]:
 
     events = build_events(data.study, data.transforms, (data.tail_min, data.tail_max))
     word_events = events[events["type"] == "Word"]
-    assert len(word_events) > 0, "No Word events; add WordCreator to data.transforms."
+    assert len(word_events) > 0, "No Word events; add CombinedWordCreator to transforms."
 
     ext = ns.extractors.HuggingFaceText(**word_extractor_config)
     ext.prepare(events)

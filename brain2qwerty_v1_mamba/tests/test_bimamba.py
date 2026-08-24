@@ -1,0 +1,115 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
+"""Unit tests for the BiMamba sentence core (no data, no GPU needed).
+
+Run from the repo root:
+
+    pytest brain2qwerty_v1_mamba/tests/test_bimamba.py -v
+
+These verify the properties the V1 ablation depends on:
+  1. shape/interface parity with V1's transformer: forward(x, mask) -> (B, T, D)
+  2. padding invariance: padded zeros must not change real positions' outputs
+     (critical: a contaminated backward direction would silently corrupt the
+     sentence embeddings)
+  3. bidirectionality: changing a LATER keystroke must change EARLIER outputs
+     (V1's transformer has this; a causal-only Mamba would fail)
+  4. gradient flow through the whole stack
+"""
+
+import torch
+
+from ..mamba_core import BiMambaSentenceCoreModule
+
+DIM, N_LAYER = 64, 2  # tiny config for CPU-speed tests
+
+
+def _core() -> BiMambaSentenceCoreModule:
+    torch.manual_seed(0)
+    return BiMambaSentenceCoreModule(
+        dim=DIM,
+        n_layer=N_LAYER,
+        dropout=0.0,
+        d_state=16,
+        headdim=16,
+        expand=2,
+        d_conv=4,
+        ngroups=1,
+        head_chunk=2,
+    )
+
+
+def test_interface_and_shape():
+    core = _core()
+    x = torch.randn(3, 10, DIM)
+    mask = torch.zeros(3, 10, dtype=torch.bool)
+    mask[0, :7] = True  # sentence of 7 keystrokes
+    mask[1, :10] = True  # sentence of 10
+    mask[2, :4] = True  # sentence of 4
+    out = core(x, mask=mask)
+    assert out.shape == x.shape
+    assert torch.isfinite(out).all()
+
+
+def test_padding_invariance():
+    """Real positions must be unaffected by whatever sits in the padding."""
+    core = _core().eval()
+    torch.manual_seed(1)
+    x = torch.randn(2, 12, DIM)
+    mask = torch.zeros(2, 12, dtype=torch.bool)
+    mask[0, :5] = True
+    mask[1, :8] = True
+    with torch.no_grad():
+        out = core(x, mask=mask)
+        # corrupt the padded region and re-run: real outputs must not move
+        x2 = x.clone()
+        x2[0, 5:] = 999.0
+        x2[1, 8:] = -999.0
+        out2 = core(x2, mask=mask)
+    assert torch.allclose(out[0, :5], out2[0, :5], atol=1e-5)
+    assert torch.allclose(out[1, :8], out2[1, :8], atol=1e-5)
+    # padded positions stay zero (they are discarded by the caller anyway)
+    assert (out[0, 5:] == 0).all()
+    assert (out[1, 8:] == 0).all()
+
+
+def test_bidirectionality():
+    """A change at the LAST keystroke must affect the FIRST output — the
+    property V1's bidirectional transformer has and a causal Mamba lacks."""
+    core = _core().eval()
+    torch.manual_seed(2)
+    x = torch.randn(1, 8, DIM)
+    with torch.no_grad():
+        y1 = core(x)
+        x2 = x.clone()
+        x2[0, -1] += 1.0  # perturb the final keystroke only
+        y2 = core(x2)
+    assert not torch.allclose(y1[0, 0], y2[0, 0]), (
+        "first output did not change when the last input changed — "
+        "the core is not bidirectional"
+    )
+
+
+def test_gradient_flow():
+    core = _core()
+    x = torch.randn(2, 6, DIM, requires_grad=True)
+    mask = torch.ones(2, 6, dtype=torch.bool)
+    loss = core(x, mask=mask).pow(2).mean()
+    loss.backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+    grads = [
+        p.grad for p in core.parameters() if p.requires_grad and p.grad is not None
+    ]
+    assert grads, "no parameter received a gradient"
+    assert all(torch.isfinite(g).all() for g in grads)
+
+
+def test_unmasked_forward():
+    """mask=None path (full sequences) must also work and be finite."""
+    core = _core()
+    out = core(torch.randn(4, 9, DIM))
+    assert out.shape == (4, 9, DIM)
+    assert torch.isfinite(out).all()
