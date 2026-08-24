@@ -15,7 +15,8 @@
 # Adjust SRC if your full download lives elsewhere.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-source .venv/bin/activate
+# Env: local .venv if present (Mac), otherwise the Kelvin-2 conda env.
+if [ -f .venv/bin/activate ]; then source .venv/bin/activate; else source "$HOME/miniconda3/etc/profile.d/conda.sh" && conda activate "$HOME/sharedscratch/conda/envs/b2q"; fi
 
 SRC="${BRAIN2QWERTY_STUDIES:-$PWD/SpanishBCBL}"     # full download
 DST="$PWD/SpanishBCBL_3subj"                         # new subset folder

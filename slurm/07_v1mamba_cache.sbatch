@@ -13,10 +13,15 @@
 # no raw data ever leaves the cluster.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-source .venv/bin/activate
+# Env: local .venv if present (Mac), otherwise the Kelvin-2 conda env.
+if [ -f .venv/bin/activate ]; then source .venv/bin/activate; else source "$HOME/miniconda3/etc/profile.d/conda.sh" && conda activate "$HOME/sharedscratch/conda/envs/b2q"; fi
 
-export BRAIN2QWERTY_STUDIES="$PWD/SpanishBCBL_3subj"
-export BRAIN2QWERTY_CACHE="$PWD/.cache/b2q_v1mamba"
+# Paths: honor pre-set env vars; default to the Kelvin-2 locations, with a
+# repo-local fallback for Mac/local runs.
+export BRAIN2QWERTY_STUDIES="${BRAIN2QWERTY_STUDIES:-$HOME/sharedscratch/B2Q/code/SpanishBCBL_3subj}"
+[ -d "$BRAIN2QWERTY_STUDIES" ] || export BRAIN2QWERTY_STUDIES="$PWD/SpanishBCBL_3subj"
+export BRAIN2QWERTY_CACHE="${BRAIN2QWERTY_CACHE:-$HOME/sharedscratch/B2Q/cache_v1mamba}"
+[ -d "$(dirname "$BRAIN2QWERTY_CACHE")" ] || export BRAIN2QWERTY_CACHE="$PWD/.cache/b2q_v1mamba"
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 mkdir -p slurm/logs
 
@@ -29,6 +34,6 @@ python -m brain2qwerty_v1_mamba.main cache \
     --timeline-query "subject in ['S15','S16','S6']"
 
 # 3. pack the cache for upload as a Kaggle Dataset
-tar -czf b2q_v1mamba_cache.tar.gz -C "$PWD/.cache" b2q_v1mamba
+tar -czf b2q_v1mamba_cache.tar.gz -C "$(dirname "$BRAIN2QWERTY_CACHE")" "$(basename "$BRAIN2QWERTY_CACHE")"
 ls -lh b2q_v1mamba_cache.tar.gz
 echo "[cache] done -> upload b2q_v1mamba_cache.tar.gz to Kaggle"

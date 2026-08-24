@@ -15,7 +15,8 @@
 #   SpanishBCBL_3subj/MEG/logs/**/S{15,16,6}-session*.mat
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-source .venv/bin/activate
+# Env: local .venv if present (Mac), otherwise the Kelvin-2 conda env.
+if [ -f .venv/bin/activate ]; then source .venv/bin/activate; else source "$HOME/miniconda3/etc/profile.d/conda.sh" && conda activate "$HOME/sharedscratch/conda/envs/b2q"; fi
 
 TARGET="$PWD/SpanishBCBL_3subj"
 mkdir -p slurm/logs "$TARGET"
