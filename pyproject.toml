@@ -90,7 +90,13 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["brain2qwerty_v1*", "brain2qwerty_v2*", "brain2qwerty_v3*", "studies*"]
+include = [
+    "brain2qwerty_v1*",
+    "brain2qwerty_v2*",
+    "brain2qwerty_v3*",
+    "brain2qwerty_v1_mamba*",
+    "studies*",
+]
 
 [tool.ruff]
 line-length = 90
