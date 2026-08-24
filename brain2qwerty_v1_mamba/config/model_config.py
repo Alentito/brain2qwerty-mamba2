@@ -27,7 +27,9 @@ def encoder(small: bool = False) -> dict:
         cfg["initial_linear"] = 256
         cfg["merger_config"] = {
             **cfg["merger_config"],
-            "fourier_emb_config": {"n_freqs": None, "total_dim": 1024, "n_dims": 2},
+            # 2D Fourier emb requires (total_dim / 2) ** (1 / n_dims) to be an
+            # integer: 512 -> sqrt(256) = 16. (1024 would give sqrt(512) — invalid.)
+            "fourier_emb_config": {"n_freqs": None, "total_dim": 512, "n_dims": 2},
         }
     return cfg
 
