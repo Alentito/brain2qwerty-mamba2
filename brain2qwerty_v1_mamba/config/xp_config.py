@@ -143,12 +143,15 @@ def colab_config(
 
 def debug_config(subjects: list | None = None, core: str = "mamba") -> dict:
     """Smoke test: one recording of the first subject, 2 epochs, single GPU."""
+    from ..transforms import _normalise_subject
+
     subjects = list(subjects or DEFAULT_SUBJECTS)
     cfg = experiment_config(
         subjects=subjects,
         core=core,
         small=True,
-        timeline_query=f"subject == '{subjects[0]}'",
+        # the timeline index stores subjects in long form ("Pinet2024Meg/S15")
+        timeline_query=f"subject == '{_normalise_subject(subjects[0])}'",
     )
     cfg["n_epochs"] = 2
     cfg["patience"] = 2

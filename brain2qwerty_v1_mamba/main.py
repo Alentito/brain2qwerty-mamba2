@@ -120,7 +120,8 @@ def main(argv: list[str] | None = None) -> None:
     p_cache.add_argument("--debug", action="store_true", help="only the debug subset")
     p_cache.add_argument(
         "--timeline-query", default=None,
-        help="neuralset study query, e.g. \"subject in ['S15','S16','S6']\" "
+        help="neuralset study query on LONG-form ids, e.g. "
+        "\"subject in ['Pinet2024Meg/S15','Pinet2024Meg/S16']\" "
         "(restricts which recordings are processed at all)",
     )
 

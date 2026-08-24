@@ -28,10 +28,11 @@ mkdir -p slurm/logs
 # 1. smoke-test the data path end to end (1 recording, fast)
 python -m brain2qwerty_v1_mamba.main cache --debug
 
-# 2. warm the full 3-subject cache (timeline query skips everything else)
+# 2. warm the full 3-subject cache (timeline query skips everything else;
+#    NOTE: the timeline index uses long-form ids "Pinet2024Meg/S15")
 python -m brain2qwerty_v1_mamba.main cache \
     --subjects S15 S16 S6 \
-    --timeline-query "subject in ['S15','S16','S6']"
+    --timeline-query "subject in ['Pinet2024Meg/S15','Pinet2024Meg/S16','Pinet2024Meg/S6']"
 
 # 3. pack the cache for upload as a Kaggle Dataset
 tar -czf b2q_v1mamba_cache.tar.gz -C "$(dirname "$BRAIN2QWERTY_CACHE")" "$(basename "$BRAIN2QWERTY_CACHE")"
