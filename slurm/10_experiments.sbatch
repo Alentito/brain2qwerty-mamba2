@@ -6,11 +6,11 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=2-00:00:00
-#SBATCH --array=0-5                    # 6 arms, see the case block below
+#SBATCH --time=3:00:00
+#SBATCH --array=0-5%3                  # 6 arms, max 3 concurrent (see case block)
 #SBATCH --output=slurm/logs/exp_%A_%a.out
 
-# Round-2 experiment grid (single pass):
+# Round-2 experiment grid (resumable single pass):
 #   0: mamba  lr=1e-4                       (optimization fix, mild)
 #   1: mamba  lr=3e-4                       (optimization fix, aggressive)
 #   2: mamba  lr=1e-4 wd=0.1 clip=1.0       (full Mamba best-practice recipe)
@@ -19,8 +19,11 @@
 #   5: transformer lr=1e-4                  (control: is V1's 5e-5 also suboptimal?)
 #
 # All arms: small 512-dim, subjects S15/S16/S6, colab preset (200 epochs,
-# patience 25), seed 33. Outputs are namespaced by --tag under
-# $BRAIN2QWERTY_CACHE/results/ so they never clash with round 1.
+# patience 25), seed 33.
+#
+# RESUMABLE: if an arm's wall time kills the job, just re-run `sbatch` on this
+# same file — finished arms skip themselves, interrupted arms resume from
+# last.ckpt with optimizer/scheduler/epoch state intact.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 # Env: local .venv if present (Mac), otherwise the Kelvin-2 conda env.
@@ -35,15 +38,29 @@ export BRAIN2QWERTY_CACHE="${BRAIN2QWERTY_CACHE:-$HOME/sharedscratch/B2Q/cache_v
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 case $SLURM_ARRAY_TASK_ID in
-  0) CORE=mamba;       EXTRA="--lr 1e-4 --tag lr1e4" ;;
-  1) CORE=mamba;       EXTRA="--lr 3e-4 --tag lr3e4" ;;
-  2) CORE=mamba;       EXTRA="--lr 1e-4 --wd 0.1 --grad-clip 1.0 --tag lr1e4-wd01-gc1" ;;
-  3) CORE=mamba3;      EXTRA="--lr 1e-4 --wd 0.1 --grad-clip 1.0 --tag v3lr1e4-wd01-gc1" ;;
-  4) CORE=mamba3;      EXTRA="--lr 3e-4 --wd 0.1 --grad-clip 1.0 --tag v3lr3e4-wd01-gc1" ;;
-  5) CORE=transformer; EXTRA="--lr 1e-4 --tag lr1e4" ;;
+  0) CORE=mamba;       TAG=lr1e4;              OPTS="--lr 1e-4" ;;
+  1) CORE=mamba;       TAG=lr3e4;              OPTS="--lr 3e-4" ;;
+  2) CORE=mamba;       TAG=lr1e4-wd01-gc1;     OPTS="--lr 1e-4 --wd 0.1 --grad-clip 1.0" ;;
+  3) CORE=mamba3;      TAG=v3lr1e4-wd01-gc1;   OPTS="--lr 1e-4 --wd 0.1 --grad-clip 1.0" ;;
+  4) CORE=mamba3;      TAG=v3lr3e4-wd01-gc1;   OPTS="--lr 3e-4 --wd 0.1 --grad-clip 1.0" ;;
+  5) CORE=transformer; TAG=lr1e4;              OPTS="--lr 1e-4" ;;
   *) echo "unknown task $SLURM_ARRAY_TASK_ID"; exit 1 ;;
 esac
 
-echo "[exp] task=$SLURM_ARRAY_TASK_ID core=$CORE extra=$EXTRA"
-python -m brain2qwerty_v1_mamba.main colab --core "$CORE" --seed 33 $EXTRA
+OUT="$BRAIN2QWERTY_CACHE/results/small-$CORE-S15-S16-S6-$TAG"
+
+# Idempotency: finished arm -> skip; interrupted arm -> resume from last.ckpt
+if [ -f "$OUT/callbacks/test_all_sentences.json" ]; then
+  echo "[exp] task=$SLURM_ARRAY_TASK_ID core=$CORE already finished -> skip"
+  exit 0
+fi
+RESUME=""
+if [ -f "$OUT/last.ckpt" ]; then
+  RESUME="--resume $OUT/last.ckpt"
+  echo "[exp] resuming from $OUT/last.ckpt"
+fi
+
+echo "[exp] task=$SLURM_ARRAY_TASK_ID core=$CORE opts=$OPTS $RESUME"
+python -m brain2qwerty_v1_mamba.main colab --core "$CORE" --seed 33 \
+  --tag "$TAG" $OPTS $RESUME
 echo "[exp] task=$SLURM_ARRAY_TASK_ID core=$CORE done."
