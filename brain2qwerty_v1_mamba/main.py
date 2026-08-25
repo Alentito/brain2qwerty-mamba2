@@ -86,14 +86,23 @@ class Experiment(_V1Experiment):
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--subjects", nargs="+", default=None,
                    help="participants, e.g. S15 S16 S6 (default: S15 S16 S6)")
-    p.add_argument("--core", choices=["mamba", "transformer"], default="mamba",
-                   help="sentence-level sequence core (transformer = V1 baseline)")
+    p.add_argument("--core", choices=["mamba", "mamba3", "transformer"], default="mamba",
+                   help="sentence-level core (transformer = V1 baseline; "
+                        "mamba3 = Mamba-3-style BCNorm+RoPE mixer)")
     p.add_argument("--small", action="store_true",
                    help="512-dim model instead of the paper's 2048 (Kaggle preset)")
     p.add_argument("--devices", type=int, default=None,
                    help="override GPU count (e.g. 2 for Kaggle T4 x2)")
     p.add_argument("--resume", default=None,
                    help="path to last.ckpt to resume interrupted training")
+    p.add_argument("--lr", type=float, default=None,
+                   help="override AdamW lr AND OneCycle max_lr (default 5e-5)")
+    p.add_argument("--wd", type=float, default=None,
+                   help="override AdamW weight decay (default 1e-4)")
+    p.add_argument("--grad-clip", type=float, default=None,
+                   help="gradient clip norm (default: none)")
+    p.add_argument("--tag", default=None,
+                   help="suffix appended to output_dir, e.g. lr1e4 (keeps arms separate)")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -156,6 +165,16 @@ def main(argv: list[str] | None = None) -> None:
         cfg["devices"] = args.devices
     if getattr(args, "resume", None):
         cfg["resume_from"] = args.resume
+    # optimization overrides (Mamba typically wants higher lr + wd 0.1 + clip)
+    if getattr(args, "lr", None) is not None:
+        cfg["optimizer"]["optimizer"]["lr"] = args.lr
+        cfg["optimizer"]["scheduler"]["kwargs"]["max_lr"] = args.lr
+    if getattr(args, "wd", None) is not None:
+        cfg["optimizer"]["optimizer"]["kwargs"]["weight_decay"] = args.wd
+    if getattr(args, "grad_clip", None) is not None:
+        cfg["grad_max_norm"] = args.grad_clip
+    if getattr(args, "tag", None):
+        cfg["output_dir"] = cfg["output_dir"] + "-" + args.tag
 
     print(
         f"[v1_mamba] mode={args.command} core={args.core} "

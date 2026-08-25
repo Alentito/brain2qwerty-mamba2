@@ -130,16 +130,21 @@ class Mamba2Mixer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def _ssd(self, x, Bmat, Cmat, dt) -> torch.Tensor:
-        """Quadratic dual form of the SSD kernel, chunked over heads (float32)."""
-        b, t, h, p = x.shape
+        """Quadratic dual form of the SSD kernel (float32)."""
+        h = x.shape[2]
         g = Bmat.shape[2]
+        Bh = Bmat.repeat_interleave(h // g, dim=2).float()
+        Ch = Cmat.repeat_interleave(h // g, dim=2).float()
+        return self._ssd_expanded(x, Bh, Ch, dt)
+
+    def _ssd_expanded(self, x, Bh, Ch, dt) -> torch.Tensor:
+        """SSD with per-head (float32) B/C, chunked over heads."""
+        b, t, h, p = x.shape
         A = -torch.exp(self.A_log.float())  # (H,), negative
 
         dA = dt.float() * A  # (B, T, H)
         L = torch.exp(_segsum(dA.permute(0, 2, 1)))  # (B, H, T, S)
 
-        Bh = Bmat.repeat_interleave(h // g, dim=2).float()
-        Ch = Cmat.repeat_interleave(h // g, dim=2).float()
         dt_s = dt.float().permute(0, 2, 1)  # (B, H, S)
 
         y = torch.empty(b, t, h, p, device=x.device, dtype=torch.float32)
@@ -176,21 +181,110 @@ class Mamba2Mixer(nn.Module):
 
 
 # --------------------------------------------------------------------------- #
+# Mamba-3-style mixer (Lahoti et al. 2026, arXiv:2603.15569)
+# --------------------------------------------------------------------------- #
+class Mamba3Mixer(Mamba2Mixer):
+    """Mamba-3-inspired upgrades on top of :class:`Mamba2Mixer`.
+
+    Implements two of the three Mamba-3 core changes, the ones targeting
+    training stability and state-tracking expressivity:
+
+    * **BCNorm + B/C biases** — RMSNorm on the B and C projections (mirrors
+      QKNorm in modern transformers) plus learnable channelwise biases. This
+      directly targets the known Mamba instability path of unbounded B/C norm
+      growth, and lets the model drop reliance on the output gate norm.
+    * **Complex-valued state via data-dependent RoPE** — a per-head rotation
+      rate ``theta_t`` is projected from the input; the cumulative angle
+      ``phi_t = cumsum(theta)`` rotates B by ``-phi`` and C by ``+phi`` across
+      state-dim pairs, so every pairwise interaction ``c_t . b_s`` carries the
+      relative rotation ``R(phi_t - phi_s)`` — the paper's RoPE trick, exact
+      in this quadratic (single-chunk) formulation.
+
+    NOT included: the exponential-trapezoidal discretization (the paper shows
+    it mainly makes the short conv redundant; we keep ``d_conv``) and the MIMO
+    state update (inference-efficiency feature, irrelevant at our scale).
+    """
+
+    def __init__(self, d_model: int, *args, rope_base: float = 10000.0, **kwargs):
+        super().__init__(d_model, *args, **kwargs)
+        if self.d_state % 2:
+            raise ValueError(f"Mamba3Mixer needs even d_state, got {self.d_state}")
+        self.rope_base = rope_base
+        # extra +nheads outputs: the per-head rotation rate theta
+        self.in_proj = nn.Linear(
+            d_model,
+            2 * self.d_inner + 2 * self.ngroups * self.d_state + 2 * self.nheads,
+            bias=False,
+        )
+        self.bc_norm = RMSNorm(self.ngroups * self.d_state, group_size=self.d_state)
+        self.b_bias = nn.Parameter(torch.zeros(self.ngroups * self.d_state))
+        self.c_bias = nn.Parameter(torch.zeros(self.ngroups * self.d_state))
+
+    def _rope(self, x: torch.Tensor, phi: torch.Tensor) -> torch.Tensor:
+        """Rotate state-dim pairs of x (B, T, H, N) by angles phi (B, T, H)."""
+        half = x.shape[-1] // 2
+        omega = self.rope_base ** (
+            -torch.arange(half, device=x.device, dtype=torch.float32) / half
+        )
+        ang = phi.unsqueeze(-1) * omega  # (B, T, H, half)
+        cos, sin = ang.cos(), ang.sin()
+        x1, x2 = x[..., :half], x[..., half:]
+        return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, t, _ = x.shape
+        z, xbc, dt_raw, theta = self.in_proj(x).split(
+            [self.d_inner, self.d_inner + 2 * self.ngroups * self.d_state,
+             self.nheads, self.nheads],
+            dim=-1,
+        )
+        xbc = self.conv1d(xbc.transpose(1, 2))[:, :, :t].transpose(1, 2)
+        xbc = F.silu(xbc)
+        xs, Bmat, Cmat = xbc.split(
+            [self.d_inner, self.ngroups * self.d_state, self.ngroups * self.d_state],
+            dim=-1,
+        )
+        # Mamba-3: BCNorm + learnable biases (stability + approximation power)
+        Bmat = self.bc_norm(Bmat) + self.b_bias
+        Cmat = self.bc_norm(Cmat) + self.c_bias
+
+        xs = xs.view(b, t, self.nheads, self.headdim)
+        dt = F.softplus(dt_raw + self.dt_bias)  # (B, T, H)
+
+        # Mamba-3: data-dependent rotation (complex state via RoPE trick)
+        h, g = self.nheads, self.ngroups
+        phi = torch.cumsum(theta.float(), dim=1)  # (B, T, H)
+        Bh = Bmat.view(b, t, g, self.d_state).repeat_interleave(h // g, dim=2).float()
+        Ch = Cmat.view(b, t, g, self.d_state).repeat_interleave(h // g, dim=2).float()
+        Bh = self._rope(Bh, -phi)
+        Ch = self._rope(Ch, phi)
+
+        y = self._ssd_expanded(xs, Bh, Ch, dt)
+        y = y + self.D.float()[:, None] * xs.float()
+        y = y.reshape(b, t, self.d_inner).to(x.dtype)
+
+        y = self.norm(y, gate=z)
+        return self.dropout(self.out_proj(y))
+
+
+# --------------------------------------------------------------------------- #
 # Bidirectional block + sentence core
 # --------------------------------------------------------------------------- #
 class BiMambaBlock(nn.Module):
-    """Pre-norm residual block with a forward and a backward Mamba-2 mixer.
+    """Pre-norm residual block with a forward and a backward Mamba mixer.
 
     The backward mixer sees the time-reversed sequence; the two outputs are
     summed. This restores the bidirectional context V1's transformer has,
-    which is required for a fair core-only ablation.
+    which is required for a fair core-only ablation. ``mixer_cls`` selects
+    Mamba-2 vs Mamba-3-style mixers.
     """
 
-    def __init__(self, dim: int, dropout: float = 0.0, **mamba_kwargs):
+    def __init__(self, dim: int, dropout: float = 0.0, mixer_cls=Mamba2Mixer,
+                 **mamba_kwargs):
         super().__init__()
         self.norm = RMSNorm(dim)
-        self.fwd = Mamba2Mixer(dim, dropout=dropout, **mamba_kwargs)
-        self.bwd = Mamba2Mixer(dim, dropout=dropout, **mamba_kwargs)
+        self.fwd = mixer_cls(dim, dropout=dropout, **mamba_kwargs)
+        self.bwd = mixer_cls(dim, dropout=dropout, **mamba_kwargs)
         self.drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -208,10 +302,12 @@ class BiMambaSentenceCoreModule(nn.Module):
     scattered back into a padded tensor, exactly like V1's transformer.
     """
 
-    def __init__(self, dim: int, n_layer: int = 4, dropout: float = 0.1, **mamba_kwargs):
+    def __init__(self, dim: int, n_layer: int = 4, dropout: float = 0.1,
+                 mixer_cls=Mamba2Mixer, **mamba_kwargs):
         super().__init__()
         self.blocks = nn.ModuleList(
-            BiMambaBlock(dim, dropout=dropout, **mamba_kwargs) for _ in range(n_layer)
+            BiMambaBlock(dim, dropout=dropout, mixer_cls=mixer_cls, **mamba_kwargs)
+            for _ in range(n_layer)
         )
         self.final_norm = RMSNorm(dim)
 
@@ -266,3 +362,26 @@ class BiMambaSentenceCore(BaseModelConfig):
         kwargs = self.model_dump()
         kwargs.pop("name", None)
         return BiMambaSentenceCoreModule(dim, **kwargs)
+
+
+class BiMamba3SentenceCoreModule(BiMambaSentenceCoreModule):
+    """Bidirectional stack of Mamba-3-style blocks (see :class:`Mamba3Mixer`)."""
+
+    def __init__(self, dim: int, **kwargs):
+        super().__init__(dim, mixer_cls=Mamba3Mixer, **kwargs)
+
+
+class BiMamba3SentenceCore(BiMambaSentenceCore):
+    """Config for :class:`BiMamba3SentenceCoreModule` (registry name = class name).
+
+    Same hyperparameters as :class:`BiMambaSentenceCore` plus ``rope_base`` for
+    the data-dependent rotation. Keep width/depth identical to the Mamba-2 and
+    transformer arms so the comparison isolates the mixer variant.
+    """
+
+    rope_base: float = 10000.0
+
+    def build(self, dim: int) -> BiMamba3SentenceCoreModule:
+        kwargs = self.model_dump()
+        kwargs.pop("name", None)
+        return BiMamba3SentenceCoreModule(dim, **kwargs)

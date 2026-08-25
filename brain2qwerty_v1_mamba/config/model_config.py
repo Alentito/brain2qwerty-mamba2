@@ -40,14 +40,16 @@ def sentence_core(core: str = "mamba", small: bool = False) -> dict:
     ``core="transformer"`` is V1's reference (bidirectional, ALiBi, depth 4).
     ``core="mamba"`` is the bidirectional Mamba-2 stack (depth 4, one forward
     and one backward SSD mixer per block) — same interface ``(x, mask)``.
+    ``core="mamba3"`` adds the Mamba-3-style stability/expressivity upgrades
+    (BCNorm + B/C biases + data-dependent RoPE state rotation).
     """
     if core == "transformer":
         # V1's reference sentence transformer, unchanged (depth 4, heads 2,
         # ALiBi) — identical at both widths so the ablation stays clean.
         return {**_V1_TRANSFORMER}
-    if core == "mamba":
+    if core in ("mamba", "mamba3"):
         return {
-            "name": "BiMambaSentenceCore",
+            "name": "BiMamba3SentenceCore" if core == "mamba3" else "BiMambaSentenceCore",
             "n_layer": 4,            # match V1 transformer depth
             "dropout": 0.1,
             "d_state": 64 if small else 128,
@@ -57,4 +59,4 @@ def sentence_core(core: str = "mamba", small: bool = False) -> dict:
             "ngroups": 1,
             "head_chunk": 8,
         }
-    raise ValueError(f"unknown core {core!r}; expected 'mamba' or 'transformer'")
+    raise ValueError(f"unknown core {core!r}; expected 'mamba', 'mamba3' or 'transformer'")
