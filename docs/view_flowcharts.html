@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Brain2Qwerty — 8 Architectural Ablations Flowcharts</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --border: #334155;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 24px;
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+    }
+    h1 {
+      font-size: 26px;
+      margin: 0 0 8px 0;
+      color: var(--accent);
+    }
+    p.subtitle {
+      color: var(--text-muted);
+      margin: 0;
+      font-size: 15px;
+    }
+    .tab-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .tab-btn {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 10px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .tab-btn:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+    .tab-btn.active {
+      background: #0284c7;
+      border-color: #38bdf8;
+      color: #ffffff;
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      display: none;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    .card.active {
+      display: block;
+    }
+    .card-header {
+      margin-bottom: 16px;
+    }
+    .card-header h2 {
+      margin: 0 0 6px 0;
+      font-size: 19px;
+      color: var(--text);
+    }
+    .card-header p {
+      margin: 0;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+    .diagram-container {
+      background: #0b1120;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      overflow-x: auto;
+      display: flex;
+      justify-content: center;
+    }
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 14px;
+    }
+    .results-table th, .results-table td {
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .results-table th {
+      background: #111827;
+      color: var(--accent);
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-tf { background: #1e3a8a; color: #93c5fd; }
+    .badge-m2 { background: #7f1d1d; color: #fca5a5; }
+    .badge-m3 { background: #14532d; color: #86efac; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Brain2Qwerty: 8 Architectural Ablations</h1>
+      <p class="subtitle">Complete visual flowcharts for Transformer, BiMamba-2, and BiMamba-3 across all 8 experimental arms.</p>
+    </header>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('tab-overview')">1. Master 8-Arm Tree</button>
+      <button class="tab-btn" onclick="switchTab('tab-transformer')">2. Transformer (Arms 1 & 8)</button>
+      <button class="tab-btn" onclick="switchTab('tab-mamba2')">3. BiMamba-2 (Arms 2, 3, 4, 5)</button>
+      <button class="tab-btn" onclick="switchTab('tab-mamba3')">4. BiMamba-3 (Arms 6 & 7)</button>
+      <button class="tab-btn" onclick="switchTab('tab-summary')">5. Full Results Matrix</button>
+    </div>
+
+    <!-- TAB 1: MASTER OVERVIEW -->
+    <div id="tab-overview" class="card active">
+      <div class="card-header">
+        <h2>Master Ablation Tree (8 Experimental Conditions)</h2>
+        <p>Shows how the 500 ms MEG window feature front-end branches into 3 sequence core architectures and 8 hyperparameter configurations.</p>
+      </div>
+      <div class="diagram-container">
+        <div class="mermaid">
+flowchart TD
+    RAW["Raw 306-ch MEG @ 1000 Hz"] --> PRE["Bandpass 0.5-45 Hz + Downsample 50 Hz"]
+    PRE --> WIN["Keystroke Windows [-200ms, +300ms]<br/>(25 samples x 306 ch)"]
+    WIN --> ENC["SimpleConvTimeAgg Front-End<br/>• 2D-Fourier Merger (270 virtual ch)<br/>• 8-Layer Dilated Conv + Attn Pooling<br/>• Output: E_t ∈ ℝ^512"]
+    
+    ENC --> CORE{"Sequence Core (4 Layers, Width 512)"}
+    
+    CORE -->|Softmax Attention| TF["Transformer Core (ALiBi)"]
+    TF --> A1["<b>[Arm 1] Transformer Baseline (R1)</b><br/>LR=5e-5, wd=1e-4, clip=None<br/><b>Test CER: 0.285</b>"]
+    TF --> A8["<b>[Arm 8] Transformer Control (Task 5)</b><br/>LR=1e-4, wd=1e-4, clip=None<br/><b>Test CER: 0.246</b>"]
+
+    CORE -->|Bidirectional SSD Recurrence| M2["BiMamba-2 Core (SSD)"]
+    M2 --> A2["<b>[Arm 2] Mamba-2 Baseline (R1)</b><br/>LR=5e-5, wd=1e-4<br/><b>Test CER: 0.412</b>"]
+    M2 --> A3["<b>[Arm 3] Mamba-2 Mild LR (Task 0)</b><br/>LR=1e-4, wd=1e-4<br/><b>Test CER: 0.394</b>"]
+    M2 --> A4["<b>[Arm 4] Mamba-2 Aggressive (Task 1)</b><br/>LR=3e-4, wd=1e-4<br/><b>Test CER: 0.304</b>"]
+    M2 --> A5["<b>[Arm 5] Mamba-2 Full Recipe (Task 2)</b><br/>LR=1e-4, wd=0.1, clip=1.0<br/><b>Test CER: 0.374</b>"]
+
+    CORE -->|BCNorm + Complex RoPE| M3["BiMamba-3 Core"]
+    M3 --> A6["<b>[Arm 6] Mamba-3 Mild (Task 3)</b><br/>LR=1e-4, wd=0.1, clip=1.0<br/><b>Test CER: 0.357</b>"]
+    M3 --> A7["<b>[Arm 7] Mamba-3 Aggressive (Task 4)</b><br/>LR=3e-4, wd=0.1, clip=1.0<br/><b>Test CER: 0.310</b>"]
+
+    A1 & A2 & A3 & A4 & A5 & A6 & A7 & A8 --> OUT["29-Class Linear Keystroke Head<br/>Cross-Entropy Loss (Evaluated via Levenshtein Sentence CER)"]
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: TRANSFORMER -->
+    <div id="tab-transformer" class="card">
+      <div class="card-header">
+        <h2>Transformer Core Dataflow (Arms 1 & 8)</h2>
+        <p>Full pairwise self-attention with ALiBi relative position biases across all keystrokes in the sentence.</p>
+      </div>
+      <div class="diagram-container">
+        <div class="mermaid">
+flowchart TD
+    IN["Keystroke Embeddings: x ∈ ℝ^(B × T × 512)"] --> LN1["LayerNorm(x)"]
+    LN1 --> QKV["Q, K, V Linear Projections (2 Attention Heads)"]
+    QKV --> ALIBI["Compute ALiBi Relative Slopes Bias:<br/>B_ij = -m · |i - j|"]
+    ALIBI --> SOFTMAX["Scaled Dot-Product Attention:<br/>A = Softmax( (Q Kᵀ / √d_k) + B )"]
+    SOFTMAX --> ATTN_OUT["Attn_Out = A · V"]
+    ATTN_OUT --> PROJ["Output Linear Projection"]
+    IN --> RES1["+ (Residual Add)"]
+    PROJ --> RES1
+    RES1 --> LN2["LayerNorm"]
+    LN2 --> MLP["Feedforward Network (MLP):<br/>Linear(512, 2048) ➔ GELU ➔ Linear(2048, 512)"]
+    RES1 --> RES2["+ (Residual Add)"]
+    MLP --> RES2
+    RES2 --> TO_NEXT["Output to Next Block / Final Classifier"]
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: BIMAMBA-2 -->
+    <div id="tab-mamba2" class="card">
+      <div class="card-header">
+        <h2>BiMamba-2 Pre-Norm Block (Arms 2, 3, 4, 5)</h2>
+        <p>Forward and time-reversed Backward SSD mixers run in parallel and are summed to ensure fair bidirectional context.</p>
+      </div>
+      <div class="diagram-container">
+        <div class="mermaid">
+flowchart TD
+    X["Input x ∈ ℝ^(B × T × 512)"] --> NORM["RMSNorm(x)"]
+    
+    subgraph FWD ["Forward Mamba-2 SSD Mixer"]
+        NORM --> INP_F["in_proj ➔ split: [z, xbc, dt_raw]"]
+        INP_F --> CONV_F["1D Conv (kernel 4) + SiLU"]
+        CONV_F --> SPLIT_F["Split: x_s (16×64), B (1×64), C (1×64)"]
+        INP_F --> DT_F["Δt = Softplus(dt_raw + dt_bias)"]
+        SPLIT_F & DT_F --> SSD_F["Quadratic SSD Dual Form:<br/>y_fwd = ( (C · Bᵀ) ⊙ exp(cumsum(Δt · A)) · Δt ) x_s + D · x_s"]
+        SSD_F --> GNORM_F["RMSNorm(y_fwd, gate=SiLU(z))"]
+        GNORM_F --> OUT_F["out_proj(y_fwd)"]
+    end
+
+    subgraph BWD ["Backward Mamba-2 SSD Mixer"]
+        NORM --> FLIP_IN["torch.flip(time_dim)"]
+        FLIP_IN --> INP_B["in_proj ➔ Conv1D ➔ SSD Recurrence"]
+        INP_B --> SSD_B["Quadratic SSD Dual Form (Reversed Order)"]
+        SSD_B --> GNORM_B["RMSNorm(gate=SiLU(z)) ➔ out_proj"]
+        GNORM_B --> FLIP_OUT["torch.flip(time_dim) ➔ y_bwd"]
+    end
+
+    OUT_F --> SUM["Sum: y_fwd + y_bwd"]
+    FLIP_OUT --> SUM
+    SUM --> DROP["Dropout(0.1)"]
+    X --> RES["+ (Residual Add)"]
+    DROP --> RES
+    RES --> BLK_OUT["Output Block Embedding (B, T, 512)"]
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: BIMAMBA-3 -->
+    <div id="tab-mamba3" class="card">
+      <div class="card-header">
+        <h2>BiMamba-3 Architecture Upgrades (Arms 6 & 7)</h2>
+        <p>Adds BCNorm with learnable biases and complex-valued state tracking via data-dependent RoPE rotation.</p>
+      </div>
+      <div class="diagram-container">
+        <div class="mermaid">
+flowchart TD
+    X["Input x ∈ ℝ^(B × T × 512)"] --> INP["in_proj ➔ [z, xbc, dt_raw, θ] (Extra nheads outputs)"]
+    
+    INP --> CONV["1D Depthwise Conv (kernel 4) + SiLU"]
+    CONV --> SPLIT["Split: x_s, Bmat, Cmat"]
+    
+    subgraph UPGRADE1 ["Upgrade 1: BCNorm + Learnable Biases"]
+        SPLIT --> BCNORM["B = RMSNorm(Bmat) + b_bias<br/>C = RMSNorm(Cmat) + c_bias<br/><i>(Prevents unbounded norm growth)</i>"]
+    end
+
+    subgraph UPGRADE2 ["Upgrade 2: Complex State via Data-Dependent RoPE"]
+        INP --> PHASE["Per-head rotation rate θ_t ∈ ℝ^H<br/>Cumulative angle: φ_t = cumsum(θ_t, dim=1)"]
+        BCNORM & PHASE --> ROPE["Rotate State Dimensions:<br/>B_rot = RoPE(B, -φ)<br/>C_rot = RoPE(C, +φ)"]
+    end
+
+    ROPE --> SSD["SSD Dual Form Kernel:<br/>(C_rot · B_rotᵀ) ≡ R(φ_t - φ_s) · (C_t · B_sᵀ)<br/>y = ( (C_rot · B_rotᵀ) ⊙ L · Δt ) x_s + D · x_s"]
+    
+    SSD --> GNORM["Gated RMSNorm(y, gate=SiLU(z))"]
+    GNORM --> OUT_P["out_proj(y)"]
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: RESULTS SUMMARY -->
+    <div id="tab-summary" class="card">
+      <div class="card-header">
+        <h2>Summary of All 8 Experimental Ablations</h2>
+        <p>Complete benchmark results on the SpanishBCBL 3-subject test split (54 test sentences, 2,280 test keystroke windows).</p>
+      </div>
+      <table class="results-table">
+        <thead>
+          <tr>
+            <th>Arm #</th>
+            <th>Model & Configuration</th>
+            <th>Family</th>
+            <th>Learning Rate</th>
+            <th>Weight Decay / Grad Clip</th>
+            <th>Test CER</th>
+            <th>Test Loss</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Arm 1</b></td>
+            <td>Transformer Baseline (Round 1)</td>
+            <td><span class="badge badge-tf">Transformer</span></td>
+            <td>5e-5</td>
+            <td>1e-4 / None</td>
+            <td><b>0.285</b></td>
+            <td>1.992</td>
+          </tr>
+          <tr>
+            <td><b>Arm 2</b></td>
+            <td>Mamba-2 Hybrid (Round 1)</td>
+            <td><span class="badge badge-m2">Mamba2</span></td>
+            <td>5e-5</td>
+            <td>1e-4 / None</td>
+            <td>0.412</td>
+            <td>3.321</td>
+          </tr>
+          <tr>
+            <td><b>Arm 3</b></td>
+            <td>Mamba-2 (Task 0)</td>
+            <td><span class="badge badge-m2">Mamba2</span></td>
+            <td>1e-4</td>
+            <td>1e-4 / None</td>
+            <td>0.394</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td><b>Arm 4</b></td>
+            <td>Mamba-2 (Task 1)</td>
+            <td><span class="badge badge-m2">Mamba2</span></td>
+            <td>3e-4</td>
+            <td>1e-4 / None</td>
+            <td><b>0.304</b></td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td><b>Arm 5</b></td>
+            <td>Mamba-2 (Task 2)</td>
+            <td><span class="badge badge-m2">Mamba2</span></td>
+            <td>1e-4</td>
+            <td>0.1 / 1.0</td>
+            <td>0.374</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td><b>Arm 6</b></td>
+            <td>Mamba-3 (Task 3)</td>
+            <td><span class="badge badge-m3">Mamba3</span></td>
+            <td>1e-4</td>
+            <td>0.1 / 1.0</td>
+            <td>0.357</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td><b>Arm 7</b></td>
+            <td>Mamba-3 (Task 4)</td>
+            <td><span class="badge badge-m3">Mamba3</span></td>
+            <td>3e-4</td>
+            <td>0.1 / 1.0</td>
+            <td><b>0.310</b></td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td><b>Arm 8</b></td>
+            <td>Transformer Control (Task 5)</td>
+            <td><span class="badge badge-tf">Transformer</span></td>
+            <td>1e-4</td>
+            <td>1e-4 / None</td>
+            <td><b>0.246</b></td>
+            <td>—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      flowchart: {
+        curve: 'basis',
+        nodeSpacing: 40,
+        rankSpacing: 40
+      }
+    });
+
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.card').forEach(card => card.classList.remove('active'));
+      
+      event.target.classList.add('active');
+      document.getElementById(tabId).classList.add('active');
+      
+      // Re-render mermaid
+      mermaid.contentLoaded();
+    }
+  </script>
+</body>
+</html>
