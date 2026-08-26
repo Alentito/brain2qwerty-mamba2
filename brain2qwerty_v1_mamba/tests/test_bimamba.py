@@ -206,3 +206,42 @@ def test_v3_config_build():
     out = module(torch.randn(2, 7, DIM))
     assert out.shape == (2, 7, DIM)
     assert torch.isfinite(out).all()
+
+
+def test_hybrid_core_and_alibi():
+    """Test Nemotron-H style Hybrid Mamba-Attention Core."""
+    from ..mamba_core import HybridSentenceCore, HybridMamba3SentenceCore
+
+    for core_cls in (HybridSentenceCore, HybridMamba3SentenceCore):
+        cfg = core_cls(
+            n_layer=4, attention_every=4, heads=4, d_state=16, headdim=16,
+            expand=2, d_conv=4, ngroups=1, head_chunk=2, dropout=0.0,
+        )
+        module = cfg.build(dim=DIM)
+        x = torch.randn(2, 8, DIM)
+        out = module(x)
+        assert out.shape == (2, 8, DIM)
+        assert torch.isfinite(out).all()
+
+        # Gradient flow test
+        loss = out.pow(2).mean()
+        loss.backward()
+        grads = [p.grad for p in module.parameters() if p.requires_grad and p.grad is not None]
+        assert len(grads) > 0
+        assert all(torch.isfinite(g).all() for g in grads)
+
+
+def test_mamba_mlp_and_gated_fusion():
+    """Test BiMambaBlock with FFN MLP sublayer and learned gated fusion."""
+    from ..mamba_core import BiMambaSentenceCore
+
+    cfg = BiMambaSentenceCore(
+        n_layer=2, d_state=16, headdim=16, expand=2, d_conv=4,
+        ngroups=1, head_chunk=2, dropout=0.0, use_mlp=True, gated_fusion=True,
+    )
+    module = cfg.build(dim=DIM)
+    x = torch.randn(2, 6, DIM)
+    out = module(x)
+    assert out.shape == (2, 6, DIM)
+    assert torch.isfinite(out).all()
+

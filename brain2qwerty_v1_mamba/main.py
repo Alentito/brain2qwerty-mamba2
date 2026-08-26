@@ -86,9 +86,11 @@ class Experiment(_V1Experiment):
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--subjects", nargs="+", default=None,
                    help="participants, e.g. S15 S16 S6 (default: S15 S16 S6)")
-    p.add_argument("--core", choices=["mamba", "mamba3", "transformer"], default="mamba",
-                   help="sentence-level core (transformer = V1 baseline; "
-                        "mamba3 = Mamba-3-style BCNorm+RoPE mixer)")
+    p.add_argument("--core", choices=[
+        "mamba", "mamba3", "transformer", "transformer_deep",
+        "mamba_mlp", "mamba3_mlp", "hybrid", "hybrid3", "hybrid_8l", "hybrid3_8l"
+    ], default="mamba",
+                   help="sentence-level core variant")
     p.add_argument("--small", action="store_true",
                    help="512-dim model instead of the paper's 2048 (Kaggle preset)")
     p.add_argument("--devices", type=int, default=None,

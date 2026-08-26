@@ -107,6 +107,13 @@ def patch_mixers(core_module: torch.nn.Module) -> list[Mamba2Mixer]:
 # --------------------------------------------------------------------------- #
 def build_module(args) -> tuple[BrainModule, dict, torch.device]:
     cfg = experiment_config(subjects=args.subjects, core=args.core, small=args.small)
+    # Memory optimization for local / Mac execution (avoids 16-worker RAM explosion)
+    cfg["data"]["num_workers"] = getattr(args, "num_workers", 2)
+    cfg["data"]["test_batch_size"] = getattr(args, "batch_size", 256)
+    cfg["data"]["val_batch_size"] = getattr(args, "batch_size", 256)
+    cfg["data"]["persistent_workers"] = False
+    cfg["data"]["pin_memory"] = False
+
     exp = Experiment(**cfg)
     loaders = exp.data.build()
     brain, core = exp._build_modules(loaders["test"])
@@ -361,6 +368,8 @@ def main():
     p.add_argument("--small", action="store_true")
     p.add_argument("--subjects", nargs="+", default=None)
     p.add_argument("--n-sentences", type=int, default=6)
+    p.add_argument("--num-workers", type=int, default=0, help="DataLoader workers (default 0 for low RAM)")
+    p.add_argument("--batch-size", type=int, default=256, help="Test batch size (default 256)")
     p.add_argument("--out", default="explain_out")
     args = p.parse_args()
 
