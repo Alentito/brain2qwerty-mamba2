@@ -15,19 +15,20 @@ from neuraltrain.models.transformer import TransformerEncoder
 # V2's whenever both packages are imported in one process.
 from brain2qwerty_v2.models import ConvConformer, ConvConformerModel  # noqa: E402
 
-from .mamba import MambaHybrid
+from .mamba import BiMambaGatedMLP, Mamba3StabilizedHybrid, MambaHybrid
 
 
 class ConvMambaHybrid(ConvConformer):
-    """V3 encoder config: conv front-end + hybrid Mamba-2/attention sequence core.
+    """V3 encoder config: conv front-end + hybrid Mamba / Conformer / Gated MLP sequence core."""
 
-    Identical to :class:`ConvConformer` except that ``transformer_config`` also
-    accepts :class:`~brain2qwerty_v3.mamba.MambaHybrid`, the Nemotron-H-style
-    hybrid Mamba-2/attention stack that replaces the Conformer. Everything else
-    (auxiliary CTC head, downsampling, output layer) is inherited unchanged.
-    """
-
-    transformer_config: TransformerEncoder | Conformer | MambaHybrid | None = None
+    transformer_config: (
+        TransformerEncoder
+        | Conformer
+        | MambaHybrid
+        | Mamba3StabilizedHybrid
+        | BiMambaGatedMLP
+        | None
+    ) = None
 
     def build(
         self, n_in_channels: int, n_outputs: int | None = None

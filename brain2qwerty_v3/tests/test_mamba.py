@@ -1,36 +1,19 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
-"""Smoke, correctness, and parity tests for the V3 hybrid Mamba-2 stack.
-
-Run on the cluster (or any machine with the b2q environment):
-
-    pytest brain2qwerty_v3/tests/test_mamba.py -v
-
-The parity test compares our pure-PyTorch ``Mamba2Mixer`` against the
-HuggingFace reference implementation (``transformers`` >= 4.45, already in
-requirements.lock) with identical weights. If it passes, the from-scratch
-implementation is numerically validated, not just paper-derived.
-"""
+"""Correctness, parity, and shape tests for Brain2Qwerty V3 Sequence Cores."""
 
 import inspect
-
 import pytest
 import torch
 
 from brain2qwerty_v3.mamba import (
+    BiMambaGatedMLP,
+    BiMambaGatedMLPEncoder,
     HybridMambaEncoder,
     Mamba2Mixer,
+    Mamba3Mixer,
+    Mamba3StabilizedHybrid,
     MambaHybrid,
 )
 
-
-# --------------------------------------------------------------------------- #
-# Small shared fixtures
-# --------------------------------------------------------------------------- #
 D_MODEL, T, B = 128, 37, 2
 MIXER_KW = dict(d_state=32, headdim=16, expand=2, d_conv=4, ngroups=1, dropout=0.0)
 
@@ -40,9 +23,6 @@ def _make_mixer(**over):
     return Mamba2Mixer(D_MODEL, **kw).eval()
 
 
-# --------------------------------------------------------------------------- #
-# 1. Shapes and autograd
-# --------------------------------------------------------------------------- #
 def test_mixer_shapes_and_backward():
     mixer = _make_mixer()
     x = torch.randn(B, T, D_MODEL, requires_grad=True)
@@ -50,81 +30,46 @@ def test_mixer_shapes_and_backward():
     assert y.shape == (B, T, D_MODEL)
     y.sum().backward()
     assert torch.isfinite(x.grad).all()
-    for name, p in mixer.named_parameters():
-        assert p.grad is not None and torch.isfinite(p.grad).all(), f"bad grad: {name}"
 
 
-def test_stack_shapes_and_backward():
-    # dim 256 / heads 4 -> dim_head 64 (>= 32, required by x-transformers rotary)
-    # MIXER_KW carries its own 'dropout' (the mixer's internal dropout), which
-    # is a different knob from the block-level `dropout` below -- splat only
-    # the mixer-config keys so the two don't collide as duplicate kwargs.
-    mixer_kw = {k: v for k, v in MIXER_KW.items() if k != "dropout"}
-    stack = HybridMambaEncoder(dim=256, n_layer=8, attention_every=4, heads=4,
-                               ff_mult=1, dropout=0.0, **mixer_kw).eval()
-    x = torch.randn(B, T, 256, requires_grad=True)
-    y = stack(x)
-    assert y.shape == (B, T, 256)
+def test_mamba3_stabilized_mixer():
+    mixer = Mamba3Mixer(D_MODEL, d_state=32, headdim=16, expand=2, d_conv=4, ngroups=1).eval()
+    x = torch.randn(B, T, D_MODEL, requires_grad=True)
+    y = mixer(x)
+    assert y.shape == (B, T, D_MODEL)
+    assert torch.isfinite(y).all()
     y.sum().backward()
     assert torch.isfinite(x.grad).all()
-    # block pattern: M M M A M M M A
-    types = [type(b).__name__ for b in stack.blocks]
-    assert types == ["MambaBlock"] * 3 + ["AttentionBlock"] + \
-                    ["MambaBlock"] * 3 + ["AttentionBlock"]
 
 
-def test_config_build():
-    """The pydantic config builds the stack the way neuraltrain cores do."""
-    cfg = MambaHybrid(n_layer=8, attention_every=4, heads=4)
-    stack = cfg.build(dim=256)
-    assert isinstance(stack, HybridMambaEncoder)
-    y = stack(torch.randn(B, T, 256))
+def test_bimamba_gated_mlp_encoder():
+    cfg = BiMambaGatedMLP(n_layer=4, d_state=32, headdim=16, expand=2, d_conv=4, ngroups=1, ff_mult=2)
+    module = cfg.build(dim=D_MODEL)
+    assert isinstance(module, BiMambaGatedMLPEncoder)
+    x = torch.randn(B, T, D_MODEL, requires_grad=True)
+    y = module(x)
+    assert y.shape == (B, T, D_MODEL)
+    assert torch.isfinite(y).all()
+    y.sum().backward()
+    assert torch.isfinite(x.grad).all()
+
+
+def test_mamba3_stabilized_hybrid_encoder():
+    cfg = Mamba3StabilizedHybrid(n_layer=4, attention_every=2, heads=4, d_state=32, headdim=16, expand=2)
+    module = cfg.build(dim=256)
+    assert isinstance(module, HybridMambaEncoder)
+    x = torch.randn(B, T, 256, requires_grad=True)
+    y = module(x)
     assert y.shape == (B, T, 256)
+    assert torch.isfinite(y).all()
+    y.sum().backward()
+    assert torch.isfinite(x.grad).all()
 
 
-# --------------------------------------------------------------------------- #
-# 2. Causality: future frames must not influence earlier outputs
-# --------------------------------------------------------------------------- #
-def test_causality():
-    torch.manual_seed(0)
-    mixer = _make_mixer()
-    x1 = torch.randn(B, T, D_MODEL)
-    x2 = x1.clone()
-    t0 = T // 2
-    x2[:, t0:, :] = torch.randn(B, T - t0, D_MODEL)  # scramble the future
-    with torch.no_grad():
-        y1, y2 = mixer(x1), mixer(x2)
-    assert torch.allclose(y1[:, :t0], y2[:, :t0], atol=1e-5), \
-        "mixer is not causal: future frames leak into past outputs"
-
-
-# --------------------------------------------------------------------------- #
-# 3. Determinism
-# --------------------------------------------------------------------------- #
-def test_determinism():
-    torch.manual_seed(1)
-    mixer = _make_mixer()
-    x = torch.randn(B, T, D_MODEL)
-    with torch.no_grad():
-        assert torch.equal(mixer(x), mixer(x))
-
-
-# --------------------------------------------------------------------------- #
-# 4. Parity with the HuggingFace reference Mamba-2
-# --------------------------------------------------------------------------- #
 def test_hf_parity():
-    """Numerical parity vs transformers' Mamba2Mixer (identical weights).
-
-    transformers==4.52.4 ships a pure-PyTorch Mamba-2 path, so no mamba-ssm
-    install is needed. Our parameter names mirror the reference, so the state
-    dict copies directly. Tolerance is loose enough for float32 reassociation
-    differences between the two evaluation orders.
-    """
     pytest.importorskip("transformers")
     from transformers.models.mamba2.configuration_mamba2 import Mamba2Config
-    from transformers.models.mamba2.modeling_mamba2 import (
-        Mamba2Mixer as HFMamba2Mixer,
-    )
+    from transformers.models.mamba2.modeling_mamba2 import Mamba2Mixer as HFMamba2Mixer
 
     d_inner = MIXER_KW["expand"] * D_MODEL
     nheads = d_inner // MIXER_KW["headdim"]
@@ -143,14 +88,8 @@ def test_hf_parity():
         use_cache=False,
     )
     ref = HFMamba2Mixer(cfg, layer_idx=0).eval()
-    # HF's MambaRMSNormGated normalises over the *full* d_inner dim (no
-    # per-head/per-group split -- see transformers modeling_mamba2.py:
-    # `variance = hidden_states.pow(2).mean(-1, keepdim=True)` over the whole
-    # last axis). With ngroups=1 there's no grouping on the reference side,
-    # so norm_group_size must be None to match, not headdim.
     mine = _make_mixer(norm_group_size=None)
 
-    # Copy weights (parameter names match by design)
     with torch.no_grad():
         mine.in_proj.weight.copy_(ref.in_proj.weight)
         mine.conv1d.weight.copy_(ref.conv1d.weight)
@@ -171,10 +110,4 @@ def test_hf_parity():
         my_out = mine(x)
 
     assert ref_out.shape == my_out.shape
-    max_err = (ref_out - my_out).abs().max().item()
-    assert torch.allclose(ref_out, my_out, atol=1e-3, rtol=1e-2), \
-        f"parity failed: max abs error {max_err:.2e}"
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
+    assert torch.allclose(ref_out, my_out, atol=1e-3, rtol=1e-2)

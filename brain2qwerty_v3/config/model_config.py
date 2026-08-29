@@ -4,7 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-# Convolutional encoder with a per-subject 2D-Fourier channel merger.
+"""Brain2Qwerty V3 Model Configs for Word-Level Decoding on SpanishBCBL."""
+
 _ENCODER = {
     "name": "SimpleConv",
     "dropout_input": 0.2,
@@ -30,39 +31,98 @@ _ENCODER = {
     },
 }
 
-# Full encoder: conv encoder -> temporal downsampling -> hybrid Mamba-2 /
-# attention stack (Nemotron-H-style M-M-M-A pattern), with an auxiliary CTC
-# head (z_aux) blended back into the stack input.
-#
-# V3 architecture change vs V2: the Conformer sequence core is replaced by
-# ``MambaHybrid`` (brain2qwerty_v3/mamba.py) — Mamba-2 (SSD) blocks with one
-# global self-attention block every ``attention_every`` blocks. All other
-# components (conv encoder, per-subject Fourier merger, temporal downsampling,
-# aux CTC head, losses, decoding) are unchanged from V2.
-ENCODER = {
-    "name": "ConvMambaHybrid",
-    "dim": 1024,
-    "encoder_config": {**_ENCODER},
-    "transformer_config": {
-        "name": "MambaHybrid",
-        # 8 blocks total, attention at positions 4 and 8 -> M M M A M M M A
-        "n_layer": 8,
-        "attention_every": 4,
-        # Mamba-2 (SSD) mixer
-        "d_state": 128,
-        "headdim": 64,
-        "expand": 2,
-        "d_conv": 4,
-        "ngroups": 1,
-        "head_chunk": 8,
-        # attention blocks (x-transformers encoder layer, rotary + RMSNorm)
-        "heads": 4,
-        "ff_mult": 1,
-        "attn_dropout": 0.1,
-        "ff_dropout": 0.0,
-        "rotary_pos_emb": True,
-        "dropout": 0.1,
-    },
-    "temporal_downsampling_config": {"kernel_size": 16, "stride": 4},
-    "aux_prediction": True,
-}
+
+def build_encoder_config(core: str = "mamba3_hybrid_stabilized", small: bool = False) -> dict:
+    """Build the Conv + Sequence Core encoder config.
+
+    Options:
+    * ``"conformer"``: Original Brain2Qwerty V2 baseline (Conformer CTC core).
+    * ``"mamba_mlp"``: Round 3 Best Mamba Champion (BiMamba-2 + Gated Fusion + FFN MLP).
+    * ``"mamba3_hybrid_stabilized"``: Deep Research Upgrade (BCNorm + RoPE + Adaptive Delta-t Clamping + Attention Hybrid).
+    * ``"hybrid"``: Standard Mamba-2 Nemotron-H hybrid stack.
+    """
+    dim = 512 if small else 1024
+    d_state = 64 if small else 128
+
+    if core == "conformer":
+        transformer_cfg = {
+            "name": "Conformer",
+            "depth": 8,
+            "heads": 4,
+            "ff_mult": 4,
+            "conv_expansion_factor": 2,
+            "conv_kernel_size": 31,
+            "attn_dropout": 0.1,
+            "ff_dropout": 0.1,
+            "conv_dropout": 0.1,
+        }
+    elif core == "mamba_mlp":
+        transformer_cfg = {
+            "name": "BiMambaGatedMLP",
+            "n_layer": 8,
+            "d_state": d_state,
+            "headdim": 64,
+            "expand": 2,
+            "d_conv": 4,
+            "ngroups": 1,
+            "head_chunk": 8,
+            "ff_mult": 4,
+            "dropout": 0.1,
+        }
+    elif core in ("mamba3_hybrid_stabilized", "mamba3_hybrid"):
+        transformer_cfg = {
+            "name": "Mamba3StabilizedHybrid",
+            "n_layer": 8,
+            "attention_every": 4,
+            "d_state": d_state,
+            "headdim": 64,
+            "expand": 2,
+            "d_conv": 4,
+            "ngroups": 1,
+            "head_chunk": 8,
+            "rope_base": 10000.0,
+            "heads": 4,
+            "ff_mult": 2,
+            "attn_dropout": 0.1,
+            "ff_dropout": 0.0,
+            "rotary_pos_emb": True,
+            "dropout": 0.1,
+        }
+    elif core in ("hybrid", "mamba_hybrid"):
+        transformer_cfg = {
+            "name": "MambaHybrid",
+            "n_layer": 8,
+            "attention_every": 4,
+            "d_state": d_state,
+            "headdim": 64,
+            "expand": 2,
+            "d_conv": 4,
+            "ngroups": 1,
+            "head_chunk": 8,
+            "heads": 4,
+            "ff_mult": 2,
+            "attn_dropout": 0.1,
+            "ff_dropout": 0.0,
+            "rotary_pos_emb": True,
+            "dropout": 0.1,
+        }
+    else:
+        raise ValueError(f"Unknown core: {core!r}")
+
+    enc_cfg = {**_ENCODER}
+    if small:
+        enc_cfg["hidden"] = 750
+        enc_cfg["initial_linear"] = 256
+        enc_cfg["merger_config"]["fourier_emb_config"]["total_dim"] = 512
+
+    return {
+        "name": "ConvMambaHybrid",
+        "dim": dim,
+        "encoder_config": enc_cfg,
+        "transformer_config": transformer_cfg,
+        "temporal_downsampling_config": {"kernel_size": 16, "stride": 4},
+        "aux_prediction": True,
+    }
+
+
+ENCODER = build_encoder_config(core="mamba3_hybrid_stabilized", small=False)

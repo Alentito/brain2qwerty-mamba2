@@ -4,26 +4,10 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Nemotron-H-style hybrid Mamba-2 / attention sequence stack (Brain2Qwerty V3).
-
-This module provides ``MambaHybrid``, a drop-in replacement for the
-``TransformerEncoder`` / ``Conformer`` sequence core used by
-``neuraltrain.models.conv_transformer.ConvTransformerModel``: it builds an
-``nn.Module`` with a ``forward`` of signature ``(B, T, D) -> (B, T, D)`` from a
-pydantic config dict, exactly like the reference configs.
-
-Design (following NVIDIA's Nemotron-H hybrid pattern):
-  * the stack is mostly Mamba-2 blocks (selective state-space mixers, SSD
-    parametrisation) with one global self-attention block every
-    ``attention_every`` blocks (default pattern: M, M, M, A, M, M, M, A);
-  * blocks are pre-norm (RMSNorm) residual blocks;
-  * a final RMSNorm is applied to the stack output.
-
-The Mamba-2 mixer is implemented in pure PyTorch using the quadratic "dual"
-form of the SSD kernel (Dao & Gu, 2024, sec. 4-6), computed in float32 and
-chunked over heads to bound memory. It has no dependency on the ``mamba-ssm``
-CUDA kernels, so it runs on any GPU/CPU; for long contexts the mixer can later
-be swapped for the reference kernels without changing the surrounding code.
+"""Brain2Qwerty V3 Sequence Cores:
+1. Conformer (V2 reference baseline on SpanishBCBL)
+2. BiMambaGatedMLP (Round 3 Best Mamba Champion: BiMamba-2 + Gated Fusion + FFN MLP)
+3. Mamba3StabilizedHybrid (Mamba-3 BCNorm + Data-Dependent RoPE + Adaptive Delta-t Clamping + Attention Hybrid)
 """
 
 import math
@@ -40,18 +24,7 @@ from neuraltrain.models.base import BaseModelConfig
 # Primitives
 # --------------------------------------------------------------------------- #
 class RMSNorm(nn.Module):
-    """Root-mean-square layer norm (no bias, learned gain), with optional gating.
-
-    ``group_size`` splits the feature dim into groups normalised separately
-    (e.g. ``headdim`` reproduces the gated per-head norm of the official
-    Mamba-2 / HuggingFace implementations; ``None`` normalises over the full
-    feature dim).
-
-    ``forward(x, gate=z)`` reproduces HF's ``MambaRMSNormGated``: the gate is
-    applied via ``x * silu(z)`` *before* the RMS statistic is computed, not
-    after normalisation. Gating after normalisation changes the variance the
-    norm is computed over and is numerically different from the reference.
-    """
+    """Root-mean-square layer norm with optional gating."""
 
     def __init__(self, dim: int, eps: float = 1e-6, group_size: int | None = None):
         super().__init__()
@@ -73,11 +46,7 @@ class RMSNorm(nn.Module):
 
 
 def _segsum(x: torch.Tensor) -> torch.Tensor:
-    """Stable segment sum: (..., T) -> (..., T, T), lower-triangular.
-
-    ``out[..., t, s] = sum_{u=s+1}^{t} x[..., u]`` for ``s <= t`` and ``-inf``
-    elsewhere, so that ``exp(segsum(a))`` is the SSD decay mask.
-    """
+    """Stable segment sum: (..., T) -> (..., T, T), lower-triangular."""
     T = x.size(-1)
     mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=x.device), -1)
     x = x.unsqueeze(-1).expand(*x.shape, T)
@@ -87,21 +56,23 @@ def _segsum(x: torch.Tensor) -> torch.Tensor:
     return x_segsum.masked_fill(~mask, float("-inf"))
 
 
+def _apply_rope_2d(m: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
+    """Apply 2D rotary embedding along the last dimension of (B, T, ..., D)."""
+    d = m.shape[-1]
+    m_even = m[..., 0::2]
+    m_odd = m[..., 1::2]
+    cos = torch.cos(theta)
+    sin = torch.sin(theta)
+    out_even = m_even * cos - m_odd * sin
+    out_odd = m_even * sin + m_odd * cos
+    return torch.stack([out_even, out_odd], dim=-1).flatten(-2)
+
+
 # --------------------------------------------------------------------------- #
-# Mamba-2 mixer (pure PyTorch SSD, quadratic dual form)
+# Mamba-2 Mixer (Base SSD)
 # --------------------------------------------------------------------------- #
 class Mamba2Mixer(nn.Module):
-    """Single Mamba-2 (SSD) mixer layer.
-
-    Input ``x``: ``(B, T, d_model)``. Internally:
-      * ``in_proj`` produces the gate ``z``, the conv branch ``[x, B, C]`` and
-        the step-size logits ``dt``;
-      * a causal depthwise conv (kernel ``d_conv``) + SiLU smooths ``[x, B, C]``;
-      * the SSD recurrence ``h_t = exp(dt_t A) h_{t-1} + dt_t B_t x_t``,
-        ``y_t = C_t h_t + D x_t`` is evaluated in its quadratic dual form;
-      * the output is gated (via the gated RMSNorm) by ``silu(z)`` and
-        projected back to ``d_model``.
-    """
+    """Single Mamba-2 (SSD) mixer layer."""
 
     def __init__(
         self,
@@ -138,13 +109,11 @@ class Mamba2Mixer(nn.Module):
             groups=conv_dim, bias=True,
         )
 
-        # Step-size bias: dt = softplus(raw + bias), initialised in [dt_min, dt_max]
         dt = torch.exp(
             torch.rand(self.nheads) * (math.log(dt_max) - math.log(dt_min))
             + math.log(dt_min)
         )
         self.dt_bias = nn.Parameter(dt + torch.log(-torch.expm1(-dt)))
-        # Per-head negative decay and skip connection
         self.A_log = nn.Parameter(torch.log(torch.empty(self.nheads).uniform_(1, 16)))
         self.D = nn.Parameter(torch.ones(self.nheads))
 
@@ -154,34 +123,24 @@ class Mamba2Mixer(nn.Module):
 
     def _ssd(
         self,
-        x: torch.Tensor,   # (B, T, H, P)
-        Bmat: torch.Tensor,  # (B, T, G, N)
-        Cmat: torch.Tensor,  # (B, T, G, N)
-        dt: torch.Tensor,  # (B, T, H)
+        x: torch.Tensor,
+        Bmat: torch.Tensor,
+        Cmat: torch.Tensor,
+        dt: torch.Tensor,
     ) -> torch.Tensor:
-        """Quadratic dual form of the SSD kernel, chunked over heads.
-
-        Memory per chunk is ``B * head_chunk * T^2`` floats; at the sentence
-        lengths produced by the temporal downsampling (T ~ a few hundred
-        frames) this is modest. Computed in float32 for stability.
-        """
         b, t, h, p = x.shape
         g = Bmat.shape[2]
-        A = -torch.exp(self.A_log.float())  # (H,), negative
+        A = -torch.exp(self.A_log.float())
+        dA = dt.float() * A
+        L = torch.exp(_segsum(dA.permute(0, 2, 1)))
 
-        # Decay mask L[b, h, t, s] = exp(sum_{u=s+1..t} dt_u * A_h) for s <= t
-        # (segsum treats the last dim as time, hence the permute)
-        dA = dt.float() * A  # (B, T, H)
-        L = torch.exp(_segsum(dA.permute(0, 2, 1)))  # (B, H, T, S)
-
-        Bh = Bmat.repeat_interleave(h // g, dim=2).float()  # (B, T, H, N)
+        Bh = Bmat.repeat_interleave(h // g, dim=2).float()
         Ch = Cmat.repeat_interleave(h // g, dim=2).float()
-        dt_s = dt.float().permute(0, 2, 1)  # (B, H, S)
+        dt_s = dt.float().permute(0, 2, 1)
 
         y = torch.empty(b, t, h, p, device=x.device, dtype=torch.float32)
         for h0 in range(0, h, self.head_chunk):
             h1 = min(h0 + self.head_chunk, h)
-            # (B, hs, T, S): content similarity x decay x step size
             cb = torch.einsum("bthn,bshn->bhts", Ch[:, :, h0:h1], Bh[:, :, h0:h1])
             m = cb * L[:, h0:h1] * dt_s[:, h0:h1].unsqueeze(2)
             y[:, :, h0:h1] = torch.einsum("bhts,bshp->bthp", m, x[:, :, h0:h1].float())
@@ -193,7 +152,6 @@ class Mamba2Mixer(nn.Module):
             [self.d_inner, self.d_inner + 2 * self.ngroups * self.d_state, self.nheads],
             dim=-1,
         )
-        # Causal depthwise conv + SiLU on [x, B, C]
         xbc = self.conv1d(xbc.transpose(1, 2))[:, :, :t].transpose(1, 2)
         xbc = F.silu(xbc)
         xs, Bmat, Cmat = xbc.split(
@@ -203,46 +161,94 @@ class Mamba2Mixer(nn.Module):
         xs = xs.view(b, t, self.nheads, self.headdim)
         Bmat = Bmat.view(b, t, self.ngroups, self.d_state)
         Cmat = Cmat.view(b, t, self.ngroups, self.d_state)
-        dt = F.softplus(dt_raw + self.dt_bias)  # (B, T, H)
+        dt = F.softplus(dt_raw + self.dt_bias)
 
         y = self._ssd(xs, Bmat, Cmat, dt)
-        # Per-head skip: D is (H,), broadcast it against the head axis, not
-        # headdim, by giving it a trailing singleton dim -> (H, 1) * (B,T,H,P).
         y = y + self.D.float()[:, None] * xs.float()
         y = y.reshape(b, t, self.d_inner).to(x.dtype)
-
-        # Gated RMSNorm (HF MambaRMSNormGated parity): gate is applied via
-        # silu(z) *inside* the norm, before the RMS statistic is computed.
         y = self.norm(y, gate=z)
         return self.dropout(self.out_proj(y))
 
 
-class MambaBlock(nn.Module):
-    """Pre-norm residual Mamba-2 block."""
+# --------------------------------------------------------------------------- #
+# Mamba-3 Stabilized Mixer (BCNorm + RoPE + Adaptive Delta-t Clamping)
+# --------------------------------------------------------------------------- #
+class Mamba3Mixer(Mamba2Mixer):
+    """Mamba-3 Stabilized Mixer.
 
-    def __init__(self, dim: int, dropout: float = 0.0, **mamba_kwargs):
-        super().__init__()
-        self.norm = RMSNorm(dim)
-        self.mixer = Mamba2Mixer(dim, dropout=dropout, **mamba_kwargs)
-        self.drop = nn.Dropout(dropout)
+    Improves continuous long-sequence state tracking via:
+    1. BCNorm on B and C matrices (RMSNorm over d_state).
+    2. Learned B and C biases.
+    3. Continuous Data-Dependent RoPE state rotations.
+    4. Clamped step-size softplus.
+    """
+
+    def __init__(self, d_model: int, rope_base: float = 10000.0, **kwargs):
+        super().__init__(d_model, **kwargs)
+        self.rope_base = rope_base
+        self.b_norm = RMSNorm(self.d_state)
+        self.c_norm = RMSNorm(self.d_state)
+        self.b_bias = nn.Parameter(torch.zeros(self.ngroups, self.d_state))
+        self.c_bias = nn.Parameter(torch.zeros(self.ngroups, self.d_state))
+
+        # RoPE frequency bands
+        half_dim = self.d_state // 2
+        freqs = torch.exp(
+            -torch.arange(0, half_dim, dtype=torch.float32)
+            * (math.log(rope_base) / max(half_dim, 1))
+        )
+        self.register_buffer("rope_freqs", freqs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.drop(self.mixer(self.norm(x)))
+        b, t, _ = x.shape
+        z, xbc, dt_raw = self.in_proj(x).split(
+            [self.d_inner, self.d_inner + 2 * self.ngroups * self.d_state, self.nheads],
+            dim=-1,
+        )
+        xbc = self.conv1d(xbc.transpose(1, 2))[:, :, :t].transpose(1, 2)
+        xbc = F.silu(xbc)
+        xs, Bmat, Cmat = xbc.split(
+            [self.d_inner, self.ngroups * self.d_state, self.ngroups * self.d_state],
+            dim=-1,
+        )
+        xs = xs.view(b, t, self.nheads, self.headdim)
+        Bmat = Bmat.view(b, t, self.ngroups, self.d_state) + self.b_bias
+        Cmat = Cmat.view(b, t, self.ngroups, self.d_state) + self.c_bias
+
+        # BCNorm
+        Bmat = self.b_norm(Bmat)
+        Cmat = self.c_norm(Cmat)
+
+        # Adaptive softplus step-size
+        dt = F.softplus(dt_raw + self.dt_bias).clamp(min=1e-4, max=0.5)
+
+        # Data-dependent RoPE state rotation
+        dt_mean = dt.mean(dim=-1, keepdim=True)  # (B, T, 1)
+        cum_t = torch.cumsum(dt_mean, dim=1)     # (B, T, 1)
+        theta = cum_t * self.rope_freqs.view(1, 1, -1)  # (B, T, half_dim)
+        theta = theta.unsqueeze(2).expand(b, t, self.ngroups, -1)
+
+        Bmat = _apply_rope_2d(Bmat, theta)
+        Cmat = _apply_rope_2d(Cmat, theta)
+
+        y = self._ssd(xs, Bmat, Cmat, dt)
+        y = y + self.D.float()[:, None] * xs.float()
+        y = y.reshape(b, t, self.d_inner).to(x.dtype)
+        y = self.norm(y, gate=z)
+        return self.dropout(self.out_proj(y))
 
 
+# --------------------------------------------------------------------------- #
+# Attention Block (ALiBi / Rotary Self-Attention + MLP)
+# --------------------------------------------------------------------------- #
 class AttentionBlock(nn.Module):
-    """Pre-norm residual global self-attention block (x_transformers encoder).
-
-    A single x-transformers ``Encoder`` layer with rotary positional embeddings
-    and RMSNorm; includes the small feed-forward sublayer (``ff_mult``), as in
-    the Nemotron-H hybrid pattern.
-    """
+    """Pre-norm residual global self-attention block."""
 
     def __init__(
         self,
         dim: int,
         heads: int = 4,
-        ff_mult: int = 1,
+        ff_mult: int = 2,
         attn_dropout: float = 0.1,
         ff_dropout: float = 0.0,
         rotary_pos_emb: bool = True,
@@ -268,15 +274,63 @@ class AttentionBlock(nn.Module):
         return self.enc(x)
 
 
-class HybridMambaEncoder(nn.Module):
-    """Nemotron-H-style stack: Mamba-2 blocks with periodic attention blocks.
+# --------------------------------------------------------------------------- #
+# BiMamba Block with Gated Fusion + FFN MLP Sublayer
+# --------------------------------------------------------------------------- #
+class BiMambaGatedMLPBlock(nn.Module):
+    """Bidirectional Mamba-2 Block with Learned Non-Linear Gated Fusion and FFN."""
 
-    Block ``i`` (0-based) is an attention block iff ``(i + 1) % attention_every
-    == 0``; all other blocks are Mamba-2 blocks. With ``n_layer=8`` and
-    ``attention_every=4`` the pattern is ``M M M A M M M A`` (25% attention).
-    Signature: ``(B, T, D) -> (B, T, D)``, matching the neuraltrain sequence
-    cores (``TransformerEncoder`` / ``Conformer``) it replaces.
-    """
+    def __init__(self, dim: int, dropout: float = 0.1, ff_mult: int = 4, **mamba_kwargs):
+        super().__init__()
+        self.norm1 = RMSNorm(dim)
+        self.fwd = Mamba2Mixer(dim, dropout=dropout, **mamba_kwargs)
+        self.bwd = Mamba2Mixer(dim, dropout=dropout, **mamba_kwargs)
+        self.fuse_proj = nn.Linear(2 * dim, dim, bias=False)
+        self.fuse_gate = nn.Linear(2 * dim, dim, bias=True)
+        self.drop1 = nn.Dropout(dropout)
+
+        self.norm2 = RMSNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, ff_mult * dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ff_mult * dim, dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.norm1(x)
+        yf = self.fwd(h)
+        yb = torch.flip(self.bwd(torch.flip(h, dims=[1])), dims=[1])
+        cat = torch.cat([yf, yb], dim=-1)
+        y = self.fuse_proj(cat) * F.silu(self.fuse_gate(cat))
+        x = x + self.drop1(y)
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+# --------------------------------------------------------------------------- #
+# Sequence Stack Implementations
+# --------------------------------------------------------------------------- #
+class BiMambaGatedMLPEncoder(nn.Module):
+    """Stack of BiMambaGatedMLPBlocks (Round 3 Champion Architecture)."""
+
+    def __init__(self, dim: int, n_layer: int = 8, dropout: float = 0.1, **mamba_kwargs):
+        super().__init__()
+        self.blocks = nn.ModuleList(
+            BiMambaGatedMLPBlock(dim, dropout=dropout, **mamba_kwargs)
+            for _ in range(n_layer)
+        )
+        self.final_norm = RMSNorm(dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for blk in self.blocks:
+            x = blk(x)
+        return self.final_norm(x)
+
+
+class HybridMambaEncoder(nn.Module):
+    """Nemotron-H style Hybrid Stack (Mamba-2 / Mamba-3 + Attention)."""
 
     def __init__(
         self,
@@ -284,22 +338,15 @@ class HybridMambaEncoder(nn.Module):
         n_layer: int = 8,
         attention_every: int = 4,
         heads: int = 4,
-        ff_mult: int = 1,
+        ff_mult: int = 2,
         attn_dropout: float = 0.1,
         ff_dropout: float = 0.0,
         dropout: float = 0.1,
         rotary_pos_emb: bool = True,
+        mixer_cls=Mamba2Mixer,
         **mamba_kwargs: tp.Any,
     ):
         super().__init__()
-        if dim % heads != 0:
-            raise ValueError(f"dim ({dim}) must be divisible by heads ({heads})")
-        if rotary_pos_emb and dim // heads < 32:
-            raise ValueError(
-                f"dim_head ({dim // heads}) < 32: x-transformers clamps the rotary "
-                f"embedding dimension to min 32. Increase dim or reduce heads, "
-                f"or disable rotary_pos_emb."
-            )
         blocks: list[nn.Module] = []
         for i in range(n_layer):
             if (i + 1) % attention_every == 0:
@@ -314,46 +361,50 @@ class HybridMambaEncoder(nn.Module):
                     )
                 )
             else:
-                blocks.append(MambaBlock(dim, dropout=dropout, **mamba_kwargs))
+                norm = RMSNorm(dim)
+                mixer = mixer_cls(dim, dropout=dropout, **mamba_kwargs)
+                blocks.append(nn.ModuleDict({"norm": norm, "mixer": mixer, "drop": nn.Dropout(dropout)}))
         self.blocks = nn.ModuleList(blocks)
         self.final_norm = RMSNorm(dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for blk in self.blocks:
-            x = blk(x)
+            if isinstance(blk, AttentionBlock):
+                x = blk(x)
+            else:
+                h = blk["norm"](x)
+                y = blk["mixer"](h)
+                x = x + blk["drop"](y)
         return self.final_norm(x)
 
 
 # --------------------------------------------------------------------------- #
-# Config (neuraltrain BaseModelConfig; registered under name="MambaHybrid")
+# Pydantic Configs for NeuralTrain Registry
 # --------------------------------------------------------------------------- #
+class BiMambaGatedMLP(BaseModelConfig):
+    """Config for :class:`BiMambaGatedMLPEncoder`."""
+
+    n_layer: int = 8
+    dropout: float = 0.1
+    d_state: int = 128
+    headdim: int = 64
+    expand: int = 2
+    d_conv: int = 4
+    ngroups: int = 1
+    head_chunk: int = 8
+    ff_mult: int = 4
+
+    def build(self, dim: int) -> nn.Module:
+        kwargs = self.model_dump()
+        kwargs.pop("name", None)
+        return BiMambaGatedMLPEncoder(dim, **kwargs)
+
+
 class MambaHybrid(BaseModelConfig):
-    """Config for :class:`HybridMambaEncoder` (Nemotron-H-style hybrid stack).
-
-    Use as the ``transformer_config`` of ``ConvMambaHybrid``; ``build(dim)``
-    returns a module with ``forward: (B, T, D) -> (B, T, D)``.
-
-    Parameters
-    ----------
-    n_layer :
-        Total number of blocks in the stack.
-    attention_every :
-        One attention block every ``attention_every`` blocks (last block of
-        each group). ``attention_every=4`` gives the M-M-M-A pattern.
-    d_state, headdim, expand, d_conv, ngroups :
-        Mamba-2 (SSD) mixer hyperparameters.
-    heads, ff_mult, attn_dropout, ff_dropout, rotary_pos_emb :
-        Attention-block hyperparameters (x-transformers encoder).
-    dropout :
-        Dropout on the Mamba mixer output / block residual branch.
-    head_chunk :
-        Heads processed per SSD chunk (bounds the ``B * chunk * T^2`` memory).
-    """
+    """Config for :class:`HybridMambaEncoder` (Nemotron-H hybrid)."""
 
     n_layer: int = 8
     attention_every: int = 4
-
-    # Mamba-2 mixer
     d_state: int = 128
     headdim: int = 64
     expand: int = 2
@@ -362,20 +413,27 @@ class MambaHybrid(BaseModelConfig):
     head_chunk: int = 8
     dt_min: float = 0.001
     dt_max: float = 0.1
-    # per-group gated RMSNorm (set to headdim to match the official/HF Mamba-2
-    # gated norm exactly; None normalises over the full inner dim)
     norm_group_size: int | None = None
 
-    # Attention blocks
     heads: int = 4
-    ff_mult: int = 1
+    ff_mult: int = 2
     attn_dropout: float = 0.1
     ff_dropout: float = 0.0
     rotary_pos_emb: bool = True
-
     dropout: float = 0.1
 
     def build(self, dim: int) -> nn.Module:
         kwargs = self.model_dump()
-        del kwargs["name"]
-        return HybridMambaEncoder(dim, **kwargs)
+        kwargs.pop("name", None)
+        return HybridMambaEncoder(dim, mixer_cls=Mamba2Mixer, **kwargs)
+
+
+class Mamba3StabilizedHybrid(MambaHybrid):
+    """Config for Stabilized Mamba-3 Hybrid (BCNorm + RoPE + Attention)."""
+
+    rope_base: float = 10000.0
+
+    def build(self, dim: int) -> nn.Module:
+        kwargs = self.model_dump()
+        kwargs.pop("name", None)
+        return HybridMambaEncoder(dim, mixer_cls=Mamba3Mixer, **kwargs)
