@@ -1,0 +1,48 @@
+{
+  "dataset_name": "SpanishBCBL (Pinet2024Meg)",
+  "subjects": [
+    "S15",
+    "S16",
+    "S6"
+  ],
+  "total_keystroke_windows": 22302,
+  "total_unique_sentences": 576,
+  "mean_keystrokes_per_sentence": 38.71875,
+  "split_counts": {
+    "train": {
+      "n_keystrokes": 17811,
+      "n_unique_sentences": 456,
+      "mean_keystrokes_per_sent": 39.05921052631579
+    },
+    "val": {
+      "n_keystrokes": 2211,
+      "n_unique_sentences": 66,
+      "mean_keystrokes_per_sent": 33.5
+    },
+    "test": {
+      "n_keystrokes": 2280,
+      "n_unique_sentences": 54,
+      "mean_keystrokes_per_sent": 42.22222222222222
+    }
+  },
+  "subject_keystrokes": {
+    "S16": 9754,
+    "S15": 7756,
+    "S6": 4792
+  },
+  "top_5_frequent_characters": {
+    " ": 2922,
+    "a": 2611,
+    "e": 2304,
+    "s": 2017,
+    "l": 1881
+  },
+  "recording_modality": "306-Channel Elekta Neuromag MEG (204 Planar Gradiometers + 102 Magnetometers)",
+  "window_duration_ms": 500,
+  "window_time_range_ms": [
+    -200,
+    300
+  ],
+  "sampling_frequency_hz": 50,
+  "time_samples_per_window": 25
+}
