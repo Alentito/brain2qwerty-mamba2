@@ -30,7 +30,7 @@ import studies  # registers Pinet2024Meg
 from . import models as _models  # registers ConvMambaHybrid
 from . import transforms as _transforms  # registers EventsTransforms
 from .callbacks import PredictionCSVCallback
-from .config.xp_config import LLM, WORD_EXTRACTOR, debug_config, experiment_config
+from .config.xp_config import LLM, RESULTS, WORD_EXTRACTOR, debug_config, experiment_config
 from .data import SentenceDataset
 from .metrics import SemanticErrorRate
 from .pl_module import NeuroLLMModule
