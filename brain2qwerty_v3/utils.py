@@ -228,10 +228,12 @@ from brain2qwerty_v1.utils import ChannelPositions2D  # noqa: E402  # alias
 
 
 # --- Data / experiment helpers ---------------------------------------------
-def accelerator(devices: int) -> tuple[str, int]:
+def accelerator(devices: int | None = None) -> tuple[str, int]:
     """Return (accelerator, n_devices), capped to the available GPUs."""
     if torch.cuda.is_available():
-        return "gpu", max(1, min(devices, torch.cuda.device_count()))
+        count = torch.cuda.device_count()
+        n = count if devices is None else min(devices, count)
+        return "gpu", max(1, n)
     return "cpu", 1
 
 

@@ -4,7 +4,6 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
 import logging
 import typing as tp
 from pathlib import Path
@@ -26,11 +25,10 @@ from neuralset.events.study import EventsTransform
 from neuraltrain.models.base import BaseModelConfig
 from neuraltrain.utils import WandbLoggerConfig
 
-import studies  # registers Pinet2024Meg
-from . import models as _models  # registers ConvMambaHybrid
-from . import transforms as _transforms  # registers EventsTransforms
+from . import models as _models  # noqa: F401  (registers ConvConformer + ConvMambaHybrid)
+from . import transforms as _transforms  # noqa: F401  (registers EventsTransforms)
 from .callbacks import PredictionCSVCallback
-from .config.xp_config import LLM, RESULTS, WORD_EXTRACTOR, debug_config, experiment_config
+from .config.xp_config import LLM, RESULTS, WORD_EXTRACTOR
 from .data import SentenceDataset
 from .metrics import SemanticErrorRate
 from .pl_module import NeuroLLMModule
@@ -40,7 +38,12 @@ log = logging.getLogger(__name__)
 
 
 class Data(pydantic.BaseModel):
-    """Sentence-level dataloaders for Brain2Qwerty V3."""
+    """Sentence-level dataloaders for Brain2Qwerty V2/V3.
+
+    Runs the study, applies the preprocessing/split/word transforms, extends each
+    sentence window by a small random tail, and builds one padded dataloader per
+    split (train-time MEG onset jitter is applied inside the dataset).
+    """
 
     model_config = pydantic.ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
@@ -53,135 +56,221 @@ class Data(pydantic.BaseModel):
     duration: float | None = None
     jitter: bool = True
     num_classes: int = 29
-    tail_min: float = 0.4
+    tail_min: float = 0.4  # extend each sentence window by a random tail (seconds)
     tail_max: float = 0.5
 
-    batch_size: int = 64
+    batch_size: int = 32
     val_batch_size: int = 128
     test_batch_size: int = 8
-    num_workers: int = 4
-    pin_memory: bool = True
-    persistent_workers: bool = True
+    num_workers: int = 0
+    pin_memory: bool = False
+    persistent_workers: bool = False
 
     def build(self) -> dict[str, DataLoader]:
-        events = build_events(self.study, self.transforms)
-        splits = [s for s in events.split.unique() if pd_notna(s)]
-        loaders = {}
-        for split in splits:
-            ds = SentenceDataset(
-                events,
-                self.neuro,
-                self.extractor,
-                split=split,
-                start=self.start,
-                duration=self.duration,
-                jitter=self.jitter,
-                num_classes=self.num_classes,
-                tail_min=self.tail_min,
-                tail_max=self.tail_max,
+        events = build_events(self.study, self.transforms, (self.tail_min, self.tail_max))
+        self.neuro.prepare(events)
+        self.extractor.prepare(events)
+
+        subject_encoder = ns.extractors.LabelEncoder(
+            event_types="Meg", event_field="subject"
+        )
+        subject_encoder.prepare(events)
+        chan_pos = ChannelPositions2D(neuro=self.neuro)
+        chan_pos.prepare(events)
+
+        extractors = {
+            "neuros": self.neuro,
+            "phonemes": self.extractor,
+            "days": subject_encoder,
+            "chan_pos": chan_pos,
+        }
+        batch_sizes = {
+            "train": self.batch_size,
+            "val": self.val_batch_size,
+            "test": self.test_batch_size,
+        }
+        loaders: dict[str, DataLoader] = {}
+        for split, batch_size in batch_sizes.items():
+            mask = (events.split == split) & (events.type == "Sentence")
+            segments = ns.segments.list_segments(
+                events, mask, start=self.start, duration=self.duration
             )
-            is_train = split == "train"
-            bs = self.batch_size if is_train else (self.val_batch_size if split == "val" else self.test_batch_size)
+            if not segments:
+                continue
+            dataset = SentenceDataset(
+                extractors,
+                segments,
+                jitter=(self.jitter and split == "train"),
+                remove_incomplete_segments=True,
+            )
             loaders[split] = DataLoader(
-                ds,
-                batch_size=bs,
-                shuffle=is_train,
+                dataset,
+                collate_fn=dataset.collate_fn,
+                batch_size=batch_size,
+                shuffle=(split == "train"),
+                drop_last=(split == "train"),
                 num_workers=self.num_workers,
                 pin_memory=self.pin_memory,
-                persistent_workers=self.persistent_workers and self.num_workers > 0,
-                collate_fn=ds.collate_fn,
+                persistent_workers=self.persistent_workers,
             )
         return loaders
 
 
-def pd_notna(val) -> bool:
-    import pandas as pd
-    return pd.notna(val)
-
-
 class Experiment(pydantic.BaseModel):
-    """Brain2Qwerty V3 Word-Level End-to-End Experiment."""
+    """Train and evaluate the Brain2Qwerty V2/V3 end-to-end pipeline."""
 
     model_config = pydantic.ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
-    output_dir: str
+    data: Data
+    brain_model_config: BaseModelConfig
+    num_classes: int = 29
+
     seed: int = 123
     max_epochs: int = 275
+    precision: str = "bf16-mixed"
+    gradient_clip_val: float | None = 1.0
+    accumulate_gradient_batches: int = 2
+    devices: int = 1
+    output_dir: str = "."
 
-    data: Data
-    preprocess_config: dict = pydantic.Field(default_factory=dict)
-    brain_model_config: BaseModelConfig
-
+    # loss weighting + staged schedule
     alpha: float = 0.1
     beta: float = 0.01
     loss_alpha: float = 0.7
     ctc_start_epoch: int = 0
     contrastive_start_epoch: int = 150
     llm_start_epoch: int = 225
+    encoder_lr: float | None = None
 
+    # contrastive / segmenter
+    word_pool_n_layers: int = 2
+    seg_include_blanks: bool = True
+    word_extractor_config: dict = pydantic.Field(
+        default_factory=lambda: dict(WORD_EXTRACTOR)
+    )
+
+    # LLM + LoRA
     llm_name: str = LLM
     lora_rank: int = 2
-    word_extractor_config: dict = pydantic.Field(default_factory=lambda: WORD_EXTRACTOR)
+    lora_alpha_value: int = 4
+    lora_dropout: float = 0.0
+    lora_target_modules: list[str] = pydantic.Field(
+        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    )
+
+    # generation
+    max_new_tokens: int = 60
     num_beams: int = 16
+    val_num_beams: int = 1
+    length_penalty: float = 0.2
+    label_smoothing: float = 0.02
+    meg_dropout_rate: float = 0.1
+    ctc_dropout_rate: float = 0.1
 
-    optimizer_config: dict = pydantic.Field(default_factory=lambda: {"lr": 3e-4, "weight_decay": 1e-3})
-    scheduler_config: dict = pydantic.Field(default_factory=lambda: {"name": "WarmupCosine", "warmup_steps": 500, "eta_min": 1e-6})
+    optimizer_config: dict = pydantic.Field(
+        default_factory=lambda: {"lr": 8e-4, "weight_decay": 1e-3}
+    )
+    scheduler_config: dict = pydantic.Field(
+        default_factory=lambda: {"name": "OneCycleLR", "pct_start": 0.3}
+    )
+    preprocess_config: dict = pydantic.Field(default_factory=dict)
 
-    devices: int | None = None
-    gradient_clip_val: float | None = 1.0
-    accumulate_gradient_batches: int = 2
-    precision: str = "bf16-mixed"
-
-    wandb_config: WandbLoggerConfig | None = None
+    save_checkpoints: bool = True
     eval_only: bool = False
     ckpt_path: str | None = None
-    resume_ckpt: str | None = None
-    save_checkpoints: bool = True
+    resume_ckpt: str | None = None  # resume training (trainer state) from this ckpt
+    wandb_config: WandbLoggerConfig | None = None
 
-    def _build_module(self, loaders: dict[str, DataLoader]) -> NeuroLLMModule:
-        sample_batch = next(iter(loaders["train"]))
-        data = sample_batch["data"]
-        n_channels = data["neuro"].shape[1]
+    _trainer: pl.Trainer | None = None
+    _module: NeuroLLMModule | None = None
 
-        encoder = self.brain_model_config.build(n_in_channels=n_channels, n_outputs=self.brain_model_config.dim)
-        tokenizer = AutoTokenizer.from_pretrained(self.llm_name)
-        llm = AutoModelForCausalLM.from_pretrained(self.llm_name, torch_dtype=torch.bfloat16)
+    def model_post_init(self, log__: tp.Any) -> None:
+        pl.seed_everything(self.seed, workers=True)
+        torch.set_float32_matmul_precision("medium")
 
-        lora_cfg = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=self.lora_rank,
-            lora_alpha=32,
-            lora_dropout=0.1,
-            target_modules=["q_proj", "v_proj"],
+    def _build_module(self, loaders: dict) -> NeuroLLMModule:
+        word_embed_lookup = prepare_word_embeddings(self.data, self.word_extractor_config)
+        n_in_channels = loaders["train"].dataset[0].data["neuros"].shape[1]
+        network = self.brain_model_config.build(
+            n_in_channels=n_in_channels, n_outputs=self.num_classes
         )
-        llm = get_peft_model(llm, lora_cfg)
+        word_pool_dim = getattr(self.brain_model_config, "dim", 1024)
 
-        metrics = {
-            "val/CER": CharErrorRate(),
-            "val/WER": WordErrorRate(),
-            "val/SemER": SemanticErrorRate(),
-            "test/CER": CharErrorRate(),
-            "test/WER": WordErrorRate(),
-            "test/SemER": SemanticErrorRate(),
+        llm = AutoModelForCausalLM.from_pretrained(
+            self.llm_name, torch_dtype=torch.bfloat16, trust_remote_code=True
+        )
+        llm = get_peft_model(
+            llm,
+            LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                inference_mode=False,
+                r=self.lora_rank,
+                lora_alpha=self.lora_alpha_value,
+                lora_dropout=self.lora_dropout,
+                target_modules=list(self.lora_target_modules),
+            ),
+        )
+        llm.print_trainable_parameters()
+        tokenizer = AutoTokenizer.from_pretrained(self.llm_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        llm_hidden = llm.get_base_model().config.hidden_size
+        adapter: nn.Module = (
+            nn.Linear(word_pool_dim, llm_hidden)
+            if word_pool_dim != llm_hidden
+            else nn.Identity()
+        )
+        llm_metrics = {
+            "CER": CharErrorRate(),
+            "WER": WordErrorRate(),
+            "SemER": SemanticErrorRate(),
         }
 
         module = NeuroLLMModule(
-            encoder=encoder,
+            network=network,
             llm=llm,
             tokenizer=tokenizer,
-            word_extractor_config=self.word_extractor_config,
-            metrics=metrics,
-            preprocess_config=self.preprocess_config,
-            optimizer_config=self.optimizer_config,
-            scheduler_config=self.scheduler_config,
+            word_proj_adapter=adapter,
+            word_embed_lookup=word_embed_lookup,
+            word_pool_dim=word_pool_dim,
+            word_pool_n_layers=self.word_pool_n_layers,
+            seg_include_blanks=self.seg_include_blanks,
             alpha=self.alpha,
             beta=self.beta,
             loss_alpha=self.loss_alpha,
             ctc_start_epoch=self.ctc_start_epoch,
             contrastive_start_epoch=self.contrastive_start_epoch,
             llm_start_epoch=self.llm_start_epoch,
+            encoder_lr=self.encoder_lr,
+            max_new_tokens=self.max_new_tokens,
             num_beams=self.num_beams,
+            val_num_beams=self.val_num_beams,
+            length_penalty=self.length_penalty,
+            label_smoothing=self.label_smoothing,
+            meg_dropout_rate=self.meg_dropout_rate,
+            ctc_dropout_rate=self.ctc_dropout_rate,
+            optimizer_config=self.optimizer_config,
+            scheduler_config=self.scheduler_config,
+            preprocess_config=self.preprocess_config,
+            llm_metrics=llm_metrics,
+            save_dir=self.output_dir,
         )
+
+        # materialise lazy params (channel merger) before DDP wraps the model
+        sample = loaders["train"].dataset[0]
+        module.eval()
+        with torch.no_grad():
+            module.network(
+                sample.data["neuros"].transpose(1, 2),
+                torch.zeros(1, dtype=torch.long),
+                sample.data.get("chan_pos"),
+            )
+        module.train()
+        for mod in module.modules():
+            for pname, p in list(getattr(mod, "_parameters", {}).items()):
+                if isinstance(p, torch.nn.UninitializedParameter):
+                    mod._parameters[pname] = nn.Parameter(torch.empty(1))
         return module
 
     def _trainer_setup(self) -> pl.Trainer:
@@ -208,6 +297,8 @@ class Experiment(pydantic.BaseModel):
                 ),
             ]
         loggers: list = [CSVLogger(self.output_dir, name="logs")]
+        if self.wandb_config is not None:
+            loggers.append(self._build_wandb_logger())
         return pl.Trainer(
             accelerator=accel,
             devices=devices,
@@ -218,8 +309,15 @@ class Experiment(pydantic.BaseModel):
             precision=self.precision,
             callbacks=callbacks,
             logger=loggers,
-            log_every_n_steps=5,
+            log_every_n_steps=2,
         )
+
+    def _build_wandb_logger(self):
+        try:
+            xp_config = self.model_dump(mode="json")
+        except Exception:
+            xp_config = None
+        return self.wandb_config.build(save_dir=self.output_dir, xp_config=xp_config)
 
     def run(self) -> None:
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
@@ -242,56 +340,90 @@ class Experiment(pydantic.BaseModel):
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Run the V3 experiment with a selectable sequence core.
+
+    ``python -m brain2qwerty_v3.main {debug,train,eval,cache} [--core ...]``
+    """
+    import argparse
+
+    import studies  # noqa: F401  (registers the SpanishBCBL study)
+
+    from .cli import add_wandb_args, wandb_config
+    from .config.xp_config import debug_config, experiment_config
+
+    CORE_CHOICES = ["conformer", "mamba_mlp", "mamba3_hybrid_stabilized", "hybrid"]
+
     parser = argparse.ArgumentParser(prog="brain2qwerty_v3")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def add_common(p):
-        p.add_argument("--core", choices=["conformer", "mamba_mlp", "mamba3_hybrid_stabilized", "hybrid"],
-                       default="mamba3_hybrid_stabilized", help="sequence core variant")
-        p.add_argument("--small", action="store_true", help="smaller 512-dim preset")
-        p.add_argument("--subjects", nargs="+", default=None, help="subjects list (e.g. S15 S16 S6)")
-        p.add_argument("--lr", type=float, default=None, help="learning rate")
-        p.add_argument("--wd", type=float, default=None, help="weight decay")
-        p.add_argument("--devices", type=int, default=None, help="GPU count")
-        p.add_argument("--tag", default=None, help="output directory suffix tag")
-        p.add_argument("--resume", default=None, help="checkpoint to resume from")
+    # -- debug ---------------------------------------------------------------
+    p_debug = sub.add_parser("debug", help="1-timeline smoke test")
+    p_debug.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
 
-    p_debug = sub.add_parser("debug", help="smoke test")
-    add_common(p_debug)
+    # -- train ---------------------------------------------------------------
+    p_train = sub.add_parser("train", help="full training")
+    p_train.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
+    p_train.add_argument("--resume", default=None, help="checkpoint to resume from")
+    p_train.add_argument("--seed", type=int, default=None, help="override the seed")
+    p_train.add_argument("--lr", type=float, default=None, help="override learning rate")
+    p_train.add_argument("--wd", type=float, default=None, help="override weight decay")
+    p_train.add_argument("--subjects", nargs="+", default=None, help="subjects")
+    p_train.add_argument("--tag", default=None, help="output directory suffix tag")
+    p_train.add_argument("--devices", type=int, default=None, help="GPU count")
 
-    p_train = sub.add_parser("train", help="train model")
-    add_common(p_train)
+    # -- eval ----------------------------------------------------------------
+    p_eval = sub.add_parser("eval", help="evaluate a checkpoint on the test split")
+    p_eval.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
+    p_eval.add_argument("--ckpt", required=True, help="checkpoint to evaluate")
 
-    p_eval = sub.add_parser("eval", help="eval model")
-    add_common(p_eval)
-    p_eval.add_argument("--ckpt", required=True)
+    # -- cache ---------------------------------------------------------------
+    p_cache = sub.add_parser("cache", help="pre-warm the feature cache")
+    p_cache.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
+    p_cache.add_argument("--debug", action="store_true", help="only the debug subset")
 
+    for p in (p_debug, p_train, p_eval):
+        add_wandb_args(p)
     args = parser.parse_args(argv)
 
+    core = getattr(args, "core", "mamba3_hybrid_stabilized")
+
+    if args.command == "cache":
+        cfg = debug_config(core=core) if args.debug else experiment_config(core=core)
+        print("[brain2qwerty_v3] pre-warming the feature cache...")
+        Experiment(**cfg).data.build()
+        print("[brain2qwerty_v3] cache warmed.")
+        return
+
     if args.command == "debug":
-        cfg = debug_config(core=args.core)
+        cfg = debug_config(core=core)
     else:
-        out_dir = None
-        if args.tag:
-            out_dir = str(Path(RESULTS) / f"v3-{args.core}-{args.tag}")
-        cfg = experiment_config(
-            core=args.core,
-            small=args.small,
-            subjects=args.subjects,
-            lr=args.lr,
-            wd=args.wd,
-            output_dir=out_dir,
-        )
+        extra_kw: dict = {}
+        if getattr(args, "subjects", None):
+            extra_kw["subjects"] = args.subjects
+        if getattr(args, "lr", None) is not None:
+            extra_kw["lr"] = args.lr
+        if getattr(args, "wd", None) is not None:
+            extra_kw["wd"] = args.wd
+        tag = getattr(args, "tag", None)
+        if tag:
+            extra_kw["output_dir"] = str(Path(RESULTS) / f"v3-{core}-{tag}")
+        cfg = experiment_config(core=core, **extra_kw)
 
     if args.command == "eval":
         cfg["eval_only"] = True
         cfg["ckpt_path"] = args.ckpt
     if getattr(args, "resume", None):
         cfg["resume_ckpt"] = args.resume
+    if getattr(args, "seed", None) is not None:
+        cfg["seed"] = args.seed
     if getattr(args, "devices", None) is not None:
         cfg["devices"] = args.devices
 
-    print(f"[brain2qwerty_v3] running in '{args.command}' mode (core={args.core})")
+    wandb = wandb_config(args, args.command, cfg.get("seed", 0))
+    if wandb is not None:
+        cfg["wandb_config"] = wandb
+
+    print(f"[brain2qwerty_v3] running in '{args.command}' mode (core={core}, seed={cfg.get('seed')})")
     Experiment(**cfg).run()
 
 

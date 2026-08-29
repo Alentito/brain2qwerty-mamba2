@@ -47,14 +47,11 @@ def build_encoder_config(core: str = "mamba3_hybrid_stabilized", small: bool = F
     if core == "conformer":
         transformer_cfg = {
             "name": "Conformer",
-            "depth": 8,
-            "heads": 4,
-            "ff_mult": 4,
-            "conv_expansion_factor": 2,
-            "conv_kernel_size": 31,
-            "attn_dropout": 0.1,
-            "ff_dropout": 0.1,
-            "conv_dropout": 0.1,
+            "num_layers": 8,
+            "num_heads": 4,
+            "ffn_dim": dim * 4,
+            "depthwise_conv_kernel_size": 31,
+            "dropout": 0.1,
         }
     elif core == "mamba_mlp":
         transformer_cfg = {
