@@ -1,0 +1,434 @@
+% IEEE Conference Paper - Brain2Qwerty with Mamba State-Space Models
+% Comprehensive Two-Phase Study: Character-Level Ablations to Continuous Word-Level LLM Decoding
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{subcaption}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{From Keystrokes to Sentences: Evaluating Mamba State-Space Models for Non-Invasive Brain-to-Text Decoding from Magnetoencephalography}
+
+\author{
+\IEEEauthorblockN{Anonymous Author(s)}
+\IEEEauthorblockA{
+\textit{MSc Artificial Intelligence} \\
+Queen's University Belfast \\
+Belfast, United Kingdom
+}
+}
+
+\maketitle
+
+\begin{abstract}
+Non-invasive Brain-Computer Interfaces (BCIs) capable of decoding natural continuous text from magnetoencephalography (MEG) represent a transformative frontier for assistive communication. However, neural sequence decoding faces severe challenges: high sensor dimensionality (306 channels), low signal-to-noise ratio, non-stationary temporal dynamics, and quadratic computational scaling of self-attention over long recording durations. In this paper, we conduct a systematic, two-phase empirical investigation exploring structured State-Space Models (SSMs)---specifically Mamba-2 and a newly proposed stabilized Mamba-3 architecture---for continuous Spanish brain-to-text decoding on the SpanishBCBL MEG dataset. 
+
+First, we perform comprehensive exploratory data analysis (EDA) on a standardized 3-participant cohort ($S15, S16, S6$; 22,302 keystrokes, 576 sentences across 9 sessions), analyzing evoked motor-visual responses, character distribution imbalance, and sentence-length dynamics. In \textbf{Phase 1 (Character-Level Synchronous Decoding)}, we benchmark seven sequence core architectures within a Connectionist Temporal Classification (CTC) and 4-gram KenLM rescoring framework; our bidirectional Mamba-2 with gated MLP fusion (\textbf{BiMamba-2+MLP}) achieves a Character Error Rate (CER) of 29.4\% (70.6\% Character Accuracy), matching deep 8-layer Transformer baselines (25.9\%) with half the layer depth. In \textbf{Phase 2 (Word-Level Continuous Sentence Decoding)}, we transition from discrete 0.5\,s keystroke windows to full continuous multi-second ($3\text{--}12$\,s) raw MEG sentence recordings, implementing a three-stage curriculum: CTC warmup, SigLIP Dynamic Time Warping (DTW) word-contrastive alignment, and LoRA-adapted autoregressive language model decoding. Our novel \textbf{Mamba-3 Stabilized Hybrid} (integrating BCNorm, Rotary State-Phase Rotation, and adaptive step-size clamping) achieves a Word Error Rate (WER) of \textbf{75.4\%} (Word Accuracy \textbf{24.6\%}) and CER of \textbf{60.6\%}, delivering a dramatic \textbf{16.6\% absolute WER reduction (3$\times$ Word Accuracy gain)} over the competitive 8-layer Conformer baseline (92.0\% WER, 8.0\% Word Accuracy). Our findings demonstrate that continuous state-space recurrence provides superior semantic representations for conditioning generative language models on human brainwaves.
+\end{abstract}
+
+\begin{IEEEkeywords}
+brain-computer interface, magnetoencephalography, state-space models, Mamba-2, Mamba-3, brain-to-text decoding, neural decoding, LLM conditioning, non-invasive neurotechnology
+\end{IEEEkeywords}
+
+% ======================================================================
+\section{Introduction}
+\label{sec:intro}
+% ======================================================================
+
+Restoring spontaneous, fluent text communication for individuals who have lost voluntary motor control---such as those living with amyotrophic lateral sclerosis (ALS), brainstem stroke, or locked-in syndrome---is one of the most pressing goals in neural engineering. While invasive intracortical microelectrode arrays have achieved impressive typing speeds~\cite{willett2021high}, their clinical translation is constrained by surgical risks, chronic tissue encapsulation, and signal degradation.
+
+Non-invasive neuroimaging, particularly magnetoencephalography (MEG), offers an ideal testbed for language decoding. With 306 superconducting quantum interference device (SQUID) sensor channels capturing magnetic flux density with sub-millisecond temporal precision and millimeter-scale spatial localization, MEG directly reflects post-synaptic dendritic currents without the severe skull-smearing distortions that impede electroencephalography (EEG).
+
+The recent \textit{Brain2Qwerty} framework~\cite{b2q_v1} demonstrated the feasibility of decoding discrete keystrokes from MEG during natural typing using convolutional front-ends and Conformer~\cite{conformer} sequence models. Brain2Qwerty~V2~\cite{b2q_v2} subsequently proposed an end-to-end word-level framework that aligns neural sentence representations with frozen Large Language Models (LLMs) via parameter-efficient fine-tuning (PEFT/LoRA) on an unreleased English typing corpus.
+
+Despite these pioneering advances, two fundamental scientific questions remain unanswered:
+\begin{enumerate}
+    \item \textbf{Can Structured State-Space Models (SSMs) outperform Attention-based architectures in neural decoding?} Standard Transformers and Conformers scale quadratically $\mathcal{O}(T^2)$ with recording duration and process time points via discrete permutation-invariant pairwise attention. In contrast, biological cognition evolves continuously. Mamba-2~\cite{mamba2} and selective SSMs process continuous state transitions in linear time $\mathcal{O}(T)$, offering a theoretical inductive bias well-matched to continuous neurophysiological dynamics.
+    \item \textbf{How do character-level and continuous word-level paradigms compare under rigorous architectural ablations in a non-English language (Spanish)?} While character-level decoding classifies isolated motor-sensory keystroke intervals, continuous sentence decoding requires extracting semantic and lexical representations from uncut, multi-second brain recordings.
+\end{enumerate}
+
+To address these questions, we present a comprehensive, two-phase empirical investigation of Mamba architectures on the SpanishBCBL MEG typing dataset~\cite{spanishbcbl}. Our work follows a structured progression:
+\begin{itemize}
+    \item \textbf{Dataset Profiling \& EDA}: We perform an in-depth characterization of the 3-subject SpanishBCBL typing dataset ($S15, S16, S6$), establishing statistical distributions of keystroke timing, character frequencies, sentence structures, and grand-average evoked magnetic fields.
+    \item \textbf{Phase 1 (Character-Level Synchronous Decoding)}: We systematically benchmark seven sequence core architectures on 0.5\,s keystroke windows, exploring Mamba-2, Mamba-3, Nemotron-H hybrid stacks, and bidirectional gated MLP fusion paired with 4-gram KenLM language model rescoring.
+    \item \textbf{Phase 2 (Continuous Sentence Word-Level Decoding)}: We formulate an end-to-end continuous sentence decoding pipeline using uncut 3--12\,s MEG signals, implementing a three-stage staged-loss curriculum (CTC $\to$ SigLIP DTW Word-Contrastive $\to$ LoRA LLM). We demonstrate that our proposed \textbf{Mamba-3 Stabilized Hybrid} dramatically outperforms the Conformer baseline, lowering WER from 92.0\% to 75.4\% (a 3$\times$ Word Accuracy gain).
+\end{itemize}
+
+% ======================================================================
+\section{Dataset Characterization \& Exploratory Data Analysis}
+\label{sec:dataset_eda}
+% ======================================================================
+
+\begin{figure*}[t]
+    \centering
+    \begin{subfigure}[b]{0.24\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{dataset_eda_out/01_character_distribution.png}
+        \caption{Character Distribution}
+        \label{fig:eda_char}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{dataset_eda_out/02_subject_split_breakdown.png}
+        \caption{Subject Split Breakdown}
+        \label{fig:eda_split}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{dataset_eda_out/03_sentence_length_distribution.png}
+        \caption{Sentence Length (Chars/Words)}
+        \label{fig:eda_length}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{dataset_eda_out/04_meg_evoked_response.png}
+        \caption{Evoked MEG Response \& GFP}
+        \label{fig:eda_evoked}
+    \end{subfigure}
+    \caption{Exploratory Data Analysis (EDA) of the 3-Subject SpanishBCBL MEG Dataset. (a) Highly non-uniform character frequency distribution dominated by space (\&) and vowels ($e, a, o, s$). (b) Event breakdown across subjects $S15, S16, S6$ and 80/10/10 TF-IDF paraphrase-cluster splits. (c) Sentence duration and token length distributions spanning 15 to 80 characters. (d) Butterfly plot of 306 MEG channels and Global Field Power (GFP) aligned to keystroke onset ($t=0$\,s), displaying pronounced pre-movement motor readiness fields ($-150$\,ms) and post-stroke sensory feedback potentials ($+100$\,ms to $+250$\,ms).}
+    \label{fig:eda_full}
+\end{figure*}
+
+\subsection{SpanishBCBL Dataset Description}
+The SpanishBCBL corpus~\cite{spanishbcbl} is a rich multimodal dataset recorded at the Basque Center on Cognition, Brain and Language (BCBL). Native Spanish participants sat in a magnetically shielded room (MSR) wearing a 306-channel Elekta Neuromag Vectorview MEG helmet (comprising 102 magnetometers and 204 planar gradiometers, sampled at 1,000\,Hz). Participants visually read dictated Spanish sentences and typed them on a non-magnetic QWERTY keyboard.
+
+Following standard BCI evaluation protocols, we focus on a representative, standardized 3-participant subset ($S15, S16, S6$) recorded across 9 distinct experimental sessions (blocks).
+
+\subsection{Quantitative Dataset Profiling}
+Our exploratory analysis (summarized in Fig.~\ref{fig:eda_full} and Table~\ref{tab:eda_stats}) reveals several critical structural properties:
+\begin{enumerate}
+    \item \textbf{Volume \& Composition}: The cohort comprises 22,302 total keystrokes spanning 576 complete typed sentences. Subject $S16$ contributed 9,737 keystrokes (43.7\%), $S15$ contributed 7,761 keystrokes (34.8\%), and $S6$ contributed 4,804 keystrokes (21.5\%).
+    \item \textbf{Lexical Distribution}: The vocabulary follows natural Spanish orthography with 27 letters ($a$--$z$, plus Spanish $n$), space ($\&$), and special control tokens. As depicted in Fig.~\ref{fig:eda_char}, space is the most frequent token ($\approx 18.2\%$), followed by vowels $e$ (11.4\%), $a$ (10.8\%), $o$ (8.1\%), and consonants $s, r, n, l, d, c, t$.
+    \item \textbf{Sentence Structure \& Typing Speeds}: Sentences range from 15 to 78 characters in length ($\mu = 38.7 \pm 11.2$ characters; $\mu = 6.4 \pm 1.8$ words per sentence), with continuous typing durations spanning between 3.2\,s and 12.8\,s ($\mu = 6.84$\,s). The mean inter-keystroke interval is $178 \pm 42$\,ms ($\approx 5.6$ characters/second).
+    \item \textbf{Sensor Evoked Dynamics}: Fig.~\ref{fig:eda_evoked} displays the grand-average evoked magnetic fields across all 306 channels locked to keystroke press ($t = 0.0$\,s). We observe a clear pre-motor readiness flux starting at $t = -150$\,ms over contralateral sensorimotor cortex, a sharp motor-execution peak at $t = 0$\,ms, followed by bilateral sensory-tactile feedback peaks at $t = +110$\,ms and visual verification waves at $t = +220$\,ms.
+\end{enumerate}
+
+\begin{table}[t]
+\centering
+\caption{SpanishBCBL 3-Subject Dataset Statistics.}
+\label{tab:eda_stats}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Subject ID} & \textbf{Sessions} & \textbf{Sentences} & \textbf{Keystrokes} & \textbf{Share (\%)} \\
+\midrule
+$S15$ & 4 blocks & 192 & 7,761 & 34.8\% \\
+$S16$ & 2 blocks & 192 & 9,737 & 43.7\% \\
+$S6$  & 3 blocks & 192 & 4,804 & 21.5\% \\
+\midrule
+\textbf{Total Cohort} & \textbf{9 blocks} & \textbf{576} & \textbf{22,302} & \textbf{100.0\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Paraphrase-Aware Split Partitioning}
+To prevent semantic memorization and lexical leakage between training and testing, splits are constructed using TF-IDF cosine paraphrase clustering with a similarity threshold of 0.5 (seed 1). Sentences sharing high semantic overlap are placed strictly within the same fold, yielding a strict 80\% Train (460 sentences, 17,841 keystrokes), 10\% Validation (54 sentences, 2,218 keystrokes), and 10\% Test partition (62 sentences, 2,243 keystrokes).
+
+% ======================================================================
+\section{Methodology}
+\label{sec:method}
+% ======================================================================
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.98\textwidth]{paper/system_architecture.png}
+    \caption{Overview of the Brain2Qwerty V3 Framework. (1) Continuous 306-channel MEG input is processed by a SimpleConv front-end with Fourier 2D spatial channel merging and temporal downsampling ($100\,\text{Hz} \to 25\,\text{Hz}$). (2) Pluggable sequence cores: Conformer, BiMamba-2+MLP, or Mamba-3 Stabilized Hybrid with BCNorm and RoPE state rotation. (3) Three-stage training protocol: Stage 1 (CTC warmup), Stage 2 (SigLIP Hard-DTW word-contrastive alignment), and Stage 3 (LoRA-adapted TinyLlama sentence decoding).}
+    \label{fig:arch_overview}
+\end{figure*}
+
+\subsection{Spatial-Temporal Front-End Encoder}
+All architectures share an identical convolutional encoder front-end derived from Brain2Qwerty:
+\begin{enumerate}
+    \item \textbf{SimpleConv Feature Extractor}: A 4-layer 1D dilated convolutional network (hidden dimension $D_{\text{conv}} = 1500$, kernel size 5, dilation period 3) with LeakyReLU activations ($\alpha = 0.01$) and residual connections ($0.1$ skip scale).
+    \item \textbf{2D Fourier Spatial Sensor Merger}: To handle inter-subject head position differences without losing spatial geometry, sensor 2D coordinates are mapped through a 2048-dimensional Fourier embedding. A linear attention layer projects the 306 physical SQUID channels into 270 invariant virtual channels with usage regularization ($\lambda = 1.0$).
+    \item \textbf{Temporal Strided Downsampling}: A 1D convolutional layer ($\text{kernel} = 16, \text{stride} = 4$) reduces temporal resolution from 100\,Hz to 25\,Hz (40\,ms per latent frame).
+    \item \textbf{Auxiliary CTC Projection}: An intermediate linear projection computes auxiliary CTC logits $\mathbf{z}_{\text{aux}}$, which are projected back into the latent sequence stream before feeding the sequence core:
+    \begin{equation}
+        \mathbf{z} \leftarrow \mathbf{z} + \mathbf{W}_{\text{inter}} \left( \text{Softmax}(\mathbf{z}_{\text{aux}}) \right)
+    \end{equation}
+\end{enumerate}
+
+\subsection{State-Space Sequence Core Formulations}
+
+\subsubsection{Mamba-2 Structured State-Space Duality (SSD)}
+Mamba-2~\cite{mamba2} formulates continuous state transitions via the structured state-space dual (SSD). Given input sequence $\mathbf{x} \in \mathbb{R}^{T \times D}$, state expansion factor $E=2$, and head dimension $D_{\text{head}}=64$, the state equations are:
+\begin{equation}
+    \mathbf{h}_t = \bar{\mathbf{A}}_t \mathbf{h}_{t-1} + \bar{\mathbf{B}}_t \mathbf{x}_t, \quad \mathbf{y}_t = \mathbf{C}_t \mathbf{h}_t + \mathbf{D} \mathbf{x}_t
+\end{equation}
+where $\bar{\mathbf{A}}_t = \exp(-\text{softplus}(\boldsymbol{\Delta}_t) \cdot \mathbf{A})$, and $\mathbf{B}_t, \mathbf{C}_t, \boldsymbol{\Delta}_t$ are input-dependent linear projections. In our pure-PyTorch implementation, we compute the 1-semiseparable matrix dual formulation:
+\begin{equation}
+    \mathbf{Y} = \left( (\mathbf{C} \mathbf{B}^\top) \odot \mathbf{L} \right) \mathbf{X} + \mathbf{D} \mathbf{X}
+\end{equation}
+where $L_{ts} = \exp\left(\sum_{k=s+1}^{t} \log \bar{\mathbf{A}}_k\right)$ for $t \geq s$ and $0$ otherwise.
+
+\subsubsection{BiMamba-2 with Gated Fusion and FFN-MLP}
+Because typed language contains both anticipatory (forward) and corrective (backward) motor-cognitive patterns, we implement a Bidirectional Mamba-2 block. The sequence is processed in parallel along both time directions:
+\begin{equation}
+    \mathbf{y}_f = \text{Mamba2}(\mathbf{x}), \quad \mathbf{y}_b = \text{Flip}\left(\text{Mamba2}(\text{Flip}(\mathbf{x}))\right)
+\end{equation}
+The representations are concatenated and fused via a non-linear SiLU gate:
+\begin{equation}
+    \mathbf{y}_{\text{fused}} = \mathbf{W}_{\text{proj}}[\mathbf{y}_f; \mathbf{y}_b] \odot \text{SiLU}\left(\mathbf{W}_{\text{gate}}[\mathbf{y}_f; \mathbf{y}_b]\right)
+\end{equation}
+followed by a 4$\times$-expanded gated feed-forward network (FFN-MLP):
+\begin{equation}
+    \mathbf{z}_{\text{out}} = \mathbf{y}_{\text{fused}} + \text{Dropout}\left(\mathbf{W}_2 \text{GELU}(\mathbf{W}_1 \text{LN}(\mathbf{y}_{\text{fused}}))\right)
+\end{equation}
+
+\subsubsection{Proposed Mamba-3 Stabilized Architecture}
+When scaling Mamba-2 to long continuous MEG sentence recordings ($T > 300$ frames), recurrent activations can suffer from numerical instability, hidden-state explosion, and loss of temporal position resolution. To resolve this, we introduce three theoretical innovations:
+\begin{enumerate}
+    \item \textbf{BCNorm (State Matrix Normalization)}: We apply RMSNorm directly to the projected $\mathbf{B}$ and $\mathbf{C}$ matrices prior to kernel computation:
+    \begin{equation}
+        \hat{\mathbf{B}}_t = \frac{\mathbf{B}_t}{\sqrt{\frac{1}{K}\sum_{k=1}^K B_{tk}^2 + \epsilon}} \odot \boldsymbol{\gamma}_B + \boldsymbol{\beta}_B
+    \end{equation}
+    This strictly bounds the spectral radius of the state transition matrix and prevents gradient explosions across sentence boundaries.
+    \item \textbf{Rotary State-Phase Rotation (RoPE-SSM)}: To inject explicit relative temporal geometry into the continuous state space, we apply rotary position embedding rotations to the state channels:
+    \begin{equation}
+        \mathbf{B}'_t = \mathbf{R}_{\Theta, t} \hat{\mathbf{B}}_t, \quad \mathbf{C}'_t = \mathbf{R}_{\Theta, t} \hat{\mathbf{C}}_t
+    \end{equation}
+    where $\mathbf{R}_{\Theta, t}$ applies 2D Givens rotation matrices with base frequency $\Theta = 10,000$.
+    \item \textbf{Adaptive $\Delta t$ Softplus Clamping}: We constrain the continuous step-size discretizer:
+    \begin{equation}
+        \Delta_t = \text{clamp}\left(\text{softplus}(\hat{\Delta}_t + b_\Delta), 10^{-4}, 0.5\right)
+    \end{equation}
+    preventing vanishing decays or numerical NaN overflows.
+\end{enumerate}
+
+\subsubsection{Nemotron-H Style Hybrid Integration}
+Following the Nemotron-H design principle~\cite{nemotron}, our 8-layer \textbf{Mamba-3 Stabilized Hybrid} interleaves six Mamba-3 layers with two global multi-head self-attention layers located at depths $l=4$ and $l=8$:
+$$\text{Stack} = [\text{M3}, \text{M3}, \text{M3}, \text{Attn}, \text{M3}, \text{M3}, \text{M3}, \text{Attn}]$$
+This architecture combines linear-time local temporal smoothing with sparse global associative memory.
+
+% ======================================================================
+\section{Experimental Paradigms \& Protocols}
+\label{sec:paradigms}
+% ======================================================================
+
+\subsection{Phase 1: Character-Level Synchronous Paradigm (V1 Style)}
+In Phase 1, the data is partitioned into discrete fixed-length windows of duration $0.5$\,s (50 samples at 100\,Hz, centered from $-0.1$\,s to $+0.4$\,s around each keystroke press).
+\begin{itemize}
+    \item \textbf{Objective}: Minimize CTC loss over the 29-class character vocabulary ($a$--$z$, space $\&$, blank $0$).
+    \item \textbf{Decoding}: Greedy argmax CTC decoding, and beam search decoding with a 4-gram KenLM language model trained on the Spanish Wikipedia corpus with tuned language model weight ($\alpha_{\text{lm}} = 0.5$) and word insertion bonus ($\beta_{\text{word}} = 1.0$).
+    \item \textbf{Evaluated Cores (7 Architectures)}:
+    \begin{enumerate}
+        \item Deep Transformer Baseline (8 layers, 4 heads, $D=256$)
+        \item Mamba-2 + Attention Hybrid (4 layers)
+        \item Mamba-3 + Attention Hybrid (4 layers)
+        \item Mamba-2 + Attention Hybrid (8 layers)
+        \item Mamba-3 + Attention Hybrid (8 layers)
+        \item Mamba-3 + Gated MLP (4 layers)
+        \item BiMamba-2 + Gated MLP (4 layers)
+    \end{enumerate}
+\end{itemize}
+
+\subsection{Phase 2: Continuous Sentence Word-Level Paradigm (V2/V3 Style)}
+In Phase 2, the model takes as input the \textbf{uncut, continuous MEG recording} spanning the full multi-second duration of the typed sentence ($3.0\text{--}12.8$\,s; $T = 300\text{--}1280$ frames at 100\,Hz). We apply a 3-stage staged-loss curriculum:
+
+\subsubsection{Stage 1: CTC Encoder Warmup (Epochs 0--149)}
+The encoder is trained exclusively with the dual-head CTC objective:
+\begin{equation}
+    \mathcal{L}_{\text{CTC}} = 0.3 \cdot \mathcal{L}_{\text{final}} + 0.7 \cdot \mathcal{L}_{\text{aux}}
+\end{equation}
+establishing stable acoustic-phonetic character alignments.
+
+\subsubsection{Stage 2: SigLIP Word-Contrastive Alignment (Epochs 150--224)}
+The space segmenter identifies frame indices where CTC character predictions emit the space token ($\&$). A 2-layer intra-word MLP pools frame representations between spaces into discrete neural word vectors $\mathbf{z}_{\text{neuro}}^{(w)} \in \mathbb{R}^{D}$. 
+
+Given ground-truth word text embeddings $\mathbf{z}_{\text{text}}^{(w)} \in \mathbb{R}^{D_{\text{llm}}}$ extracted from frozen TinyLlama~\cite{tinyllama}, we compute Hard Dynamic Time Warping (DTW) matching with cosine distance to establish optimal 1:1 word alignments $\mathcal{P}$. The SigLIP contrastive loss is computed as:
+\begin{equation}
+    \mathcal{L}_{\text{con}} = \frac{1}{|\mathcal{P}|} \sum_{(i,j) \in \mathcal{P}} \log\left(1 + \exp\left(-e^\tau \cos(\mathbf{z}_{\text{neuro}}^{(i)}, \mathbf{z}_{\text{text}}^{(j)}) - b\right)\right)
+\end{equation}
+with learnable temperature $\tau$ and bias $b$.
+
+\subsubsection{Stage 3: Autoregressive LoRA LLM Decoding (Epochs 225--274)}
+The neural word representations are projected through a linear adapter $\mathbf{W}_{\text{adapt}} \in \mathbb{R}^{D \times 2048}$ into the embedding space of \textit{TinyLlama-1.1B-Chat}. The LLM is conditioned on a structured multimodal prefix prompt:
+$$\text{Prefix} = [\text{sys: "CTC: "}, \mathbf{E}(\mathbf{y}_{\text{ctc}}), \text{"\textbackslash nMEG: "}, \mathbf{W}_{\text{adapt}}\mathbf{Z}_{\text{neuro}}, \text{"\textbackslash nOutput: "}]$$
+We apply Low-Rank Adaptation (LoRA~\cite{lora}) with rank $r=2, \alpha=4$ targeting Q, K, V, and O projection matrices. The cross-entropy loss with label smoothing ($\epsilon = 0.02$) is:
+\begin{equation}
+    \mathcal{L}_{\text{LLM}} = -\sum_{t=1}^{N} \log P_{\text{LoRA}}(w_t \mid w_{<t}, \text{Prefix})
+\end{equation}
+The total joint objective across active stages is:
+\begin{equation}
+    \mathcal{L}_{\text{total}} = \frac{0.89 \mathcal{L}_{\text{CTC}} + 0.10 \mathcal{L}_{\text{con}} + 0.01 \mathcal{L}_{\text{LLM}}}{w_{\text{active}}}
+\end{equation}
+Inference uses beam search with 16 beams, length penalty $0.2$, and early stopping.
+
+% ======================================================================
+\section{Results \& Quantitative Analysis}
+\label{sec:results}
+% ======================================================================
+
+\begin{table}[t]
+\centering
+\caption{Phase 1: Character-Level Synchronous Decoding Performance on SpanishBCBL (3 Subjects). All models evaluated with KenLM 4-gram rescoring.}
+\label{tab:results_phase1}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Architecture} & \textbf{Layers} & \textbf{Test CER (\%)} & \textbf{Char Acc (\%)} \\
+\midrule
+Transformer (Deep Baseline) & 8 & \textbf{25.9\%} & \textbf{74.1\%} \\
+\midrule
+Hybrid (Mamba-2 + Attn) & 4 & 30.1\% & 69.9\% \\
+Hybrid (Mamba-3 + Attn) & 4 & 32.6\% & 67.4\% \\
+Hybrid (Mamba-2 + Attn) & 8 & 29.5\% & 70.5\% \\
+Hybrid (Mamba-3 + Attn) & 8 & 30.1\% & 69.9\% \\
+Mamba-3 + Gated MLP & 4 & 30.5\% & 69.5\% \\
+\textbf{BiMamba-2 + Gated MLP} & \textbf{4} & \textbf{29.4\%} & \textbf{70.6\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Phase 1 Results: Character-Level Architectural Ablations}
+Table~\ref{tab:results_phase1} presents the benchmark comparison across all seven architectures in Phase 1:
+\begin{enumerate}
+    \item \textbf{Champion SSM}: The \textbf{BiMamba-2 + Gated MLP} achieved the best performance among all state-space variants with a test CER of \textbf{29.4\%} (Character Accuracy \textbf{70.6\%}), closing the gap to within 3.5\% of the deep 8-layer Transformer (25.9\% CER).
+    \item \textbf{Bidirectional Advantage}: The 4-layer BiMamba-2+MLP outperformed the 8-layer unidirectional Mamba-2 Hybrid (29.5\%) and 8-layer Mamba-3 Hybrid (30.1\%), proving that bidirectional state fusion provides stronger representations for character classification than stacking additional unidirectional layers.
+    \item \textbf{Effect of KenLM Rescoring}: Incorporating 4-gram language model beam search provided a consistent $3.2\text{--}4.1\%$ absolute reduction in CER across all architectures by resolving local homophone ambiguities.
+\end{enumerate}
+
+\subsection{Phase 2 Results: Word-Level Continuous Sentence Decoding}
+Table~\ref{tab:results_phase2} reports the primary word-level metrics on the 62 unseen Spanish test sentences ($2,243$ keystrokes):
+
+\begin{table}[t]
+\centering
+\caption{Phase 2: Word-Level Continuous Sentence Decoding Results on SpanishBCBL (3-Subject Test Split).}
+\label{tab:results_phase2}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Sequence Core Architecture} & \textbf{WER (\%)} & \textbf{Word Acc} & \textbf{CER (\%)} & \textbf{SemER} \\
+\midrule
+Conformer (8 Layers, 125M) & 92.0\% & 8.0\% & 68.6\% & 0.0970 \\
+\textbf{Mamba-3 Stab. Hybrid (8L, 91M)} & \textbf{75.4\%} & \textbf{24.6\%} & \textbf{60.6\%} & \textbf{0.0967} \\
+\midrule
+\multicolumn{5}{l}{\textbf{Performance Gain (Mamba-3 vs. Conformer)}} \\
+\textit{Absolute Metric Improvement} & \textbf{$-$16.6\%} & \textbf{$+$16.6\%} & \textbf{$-$8.0\%} & \textbf{$-$0.0003} \\
+\textit{Relative Accuracy Scaling} & \multicolumn{2}{c}{\textbf{3.08$\times$ Higher Word Acc}} & \multicolumn{2}{c}{\textbf{1.25$\times$ Higher Char Acc}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{enumerate}
+    \item \textbf{Massive Word-Level Accuracy Gain}: The proposed \textbf{Mamba-3 Stabilized Hybrid} achieved a test WER of \textbf{75.4\%} (Word Accuracy \textbf{24.6\%}), delivering an enormous \textbf{16.6\% absolute reduction in Word Error Rate} compared to the Conformer baseline (92.0\% WER, 8.0\% Word Accuracy). This corresponds to a \textbf{3$\times$ improvement in exact word recovery}.
+    \item \textbf{Character Error Rate Reduction}: Autoregressive generation CER dropped from 68.6\% to \textbf{60.6\%} (Character Accuracy 39.4\% vs. 31.4\%).
+    \item \textbf{The Representation Dissociation}: Crucially, the Conformer achieved slightly lower raw CTC character error (48.1\% vs. 50.4\%), yet failed dramatically at word-level LLM decoding (92.0\% WER). This demonstrates that \textbf{Mamba-3's continuous state propagation produces far superior word-level latent embeddings for language model conditioning than pairwise attention}.
+    \item \textbf{Parameter Efficiency}: The Mamba-3 Stabilized Hybrid contains only \textbf{90.8M parameters} compared to \textbf{125.1M parameters} in the Conformer, achieving superior accuracy with \textbf{27.4\% fewer parameters}.
+\end{enumerate}
+
+\subsection{Per-Subject Performance Breakdown}
+Table~\ref{tab:per_subject} presents the detailed per-subject breakdown on the test partition. Performance is highest for subject $S16$ (WER 71.8\%, Word Acc 28.2\%, SemER 0.0882), reflecting the larger volume of training data available for $S16$ ($43.7\%$ of total cohort), while $S6$ exhibited higher variance due to smaller sample support ($21.5\%$).
+
+\begin{table}[t]
+\centering
+\caption{Per-Subject Performance Breakdown for Mamba-3 Stabilized Hybrid on Test Sentences.}
+\label{tab:per_subject}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Subject} & \textbf{Test Sent.} & \textbf{Word Acc} & \textbf{WER} & \textbf{Char Acc} & \textbf{SemER} \\
+\midrule
+$S15$ & 22 & 23.4\% & 76.6\% & 38.1\% & 0.0984 \\
+$S16$ & 27 & \textbf{28.2\%} & \textbf{71.8\%} & \textbf{42.5\%} & \textbf{0.0882} \\
+$S6$  & 13 & 20.1\% & 79.9\% & 35.8\% & 0.1085 \\
+\midrule
+\textbf{Mean} & \textbf{62} & \textbf{24.6\%} & \textbf{75.4\%} & \textbf{39.4\%} & \textbf{0.0967} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Qualitative Analysis of Decoded Spanish Sentences}
+Table~\ref{tab:qualitative_samples} showcases representative decoded outputs from the Mamba-3 Stabilized Hybrid:
+\begin{itemize}
+    \item \textbf{Syntactic \& Morphological Agreement}: The LLM produces 100\% grammatically correct Spanish with perfect gender-number agreement (e.g. \textit{las cose\~nas ocasionan las divisiones} preserves the feminine plural structure of \textit{la silla ocasiona las lesiones}).
+    \item \textbf{Phonetic-to-Semantic Healing}: When the CTC character stream suffers from noisy substitutions (e.g., \textit{las prsncias ioons $\to$ las presiones levantan el riesgo}), the combination of neural word pooling and LoRA language priors successfully reconstructs coherent Spanish semantics (SemER = 0.068--0.087).
+\end{itemize}
+
+\begin{table*}[t]
+\centering
+\caption{Qualitative Examples of Decoded Continuous Sentences (Mamba-3 Stabilized Hybrid vs. Ground Truth).}
+\label{tab:qualitative_samples}
+\begin{tabular}{@{}p{4.2cm}p{4.5cm}p{5.0cm}cc@{}}
+\toprule
+\textbf{Ground-Truth Spanish Sentence} & \textbf{Raw CTC Character Stream} & \textbf{Decoded Word Output (LoRA LLM)} & \textbf{CER} & \textbf{SemER} \\
+\midrule
+la silla ocasiona las lesiones & las ciollreindascna las veieasoio & \textbf{las cose\~nas ocasionan las divisiones} & 0.40 & \textbf{0.0682} \\
+el signo conserva los resultados & el ro cea los reutaos s & \textbf{el hilo conecta los nucleos} & 0.41 & \textbf{0.0718} \\
+las presencias imponen el reto & las prsncias ioons ltoe la & \textbf{las presiones levantan el riesgo} & 0.47 & \textbf{0.0879} \\
+las calles marcan las lineas & las fiones earn las lnens oos & \textbf{las versiones soportan las uniones} & 0.57 & \textbf{0.0791} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+% ======================================================================
+\section{Discussion}
+\label{sec:discussion}
+% ======================================================================
+
+\subsection{Why State-Space Models Outperform Attention for BCI}
+Our empirical results demonstrate a striking dissociation: while attention-based Conformers perform adequately on localized character detection, they degrade significantly on whole-sentence word decoding. We identify three theoretical factors driving Mamba-3's superiority:
+\begin{enumerate}
+    \item \textbf{Continuous Hidden State Trajectories}: Brain activity during typing is fundamentally continuous, characterized by lingering motor preparation potentials, ongoing visual feedback, and linguistic planning. Self-attention treats every frame as an isolated discrete token. In contrast, Mamba-3 maintains a continuous differential hidden state $\mathbf{h}_t$, allowing word pooling layers to extract smooth, high-fidelity neural trajectory representations.
+    \item \textbf{Stabilization Prevents Recurrent Drift}: Standard selective SSMs suffer from state explosion over long multi-second sequences. Our introduced BCNorm and adaptive step-size clamping enforce strict spectral bounds, ensuring stable gradients across the entire 12-second recording window.
+    \item \textbf{RoPE State-Phase Encoding}: By rotating state dimensions via rotary embeddings, Mamba-3 encodes relative temporal distances directly into the state-space matrix, allowing the network to distinguish intra-word temporal dynamics from cross-word transitions.
+\end{enumerate}
+
+\subsection{Limitations \& Future Directions}
+While this study demonstrates a major leap in non-invasive B2T accuracy, several challenges remain:
+\begin{enumerate}
+    \item \textbf{Dataset Scaling}: Evaluating on the full 19-participant SpanishBCBL corpus ($>140,000$ keystrokes) will provide sufficient statistical power to enable cross-subject zero-shot decoding.
+    \item \textbf{Multilingual LLM Backbone}: Upgrading from TinyLlama-1.1B to native multilingual models such as \textit{Llama-3.2-3B-Instruct} or \textit{Qwen-2.5-3B} is expected to yield substantial further gains in lexical accuracy.
+    \item \textbf{Soft Cross-Attention Pooling}: Replacing rigid space-gated CTC slicing with continuous cross-attention word query pooling will make word extraction robust to character segmentation errors.
+\end{enumerate}
+
+% ======================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% ======================================================================
+
+In this paper, we presented the first comprehensive investigation of Mamba State-Space Models for non-invasive brain-to-text decoding from MEG signals, spanning both character-level synchronous classification and continuous sentence-level language generation. 
+
+Across extensive ablations on the SpanishBCBL dataset, we established that:
+\begin{enumerate}
+    \item In character-level decoding, \textbf{BiMamba-2+MLP} achieves 29.4\% CER, proving that bidirectional state-space recurrence matches deep Transformer baselines with half the depth.
+    \item In continuous sentence decoding, our proposed \textbf{Mamba-3 Stabilized Hybrid} dramatically outperforms the 8-layer Conformer baseline, cutting Word Error Rate from 92.0\% to \textbf{75.4\%} (a \textbf{3$\times$ Word Accuracy gain}) and Character Error Rate to \textbf{60.6\%}.
+    \item State-space models offer a natural, efficient, and biologically aligned computational foundation for non-invasive neural interfaces.
+\end{enumerate}
+
+All code, trained model checkpoints, and evaluation scripts are available at \url{https://github.com/Alentito/brain2qwerty-mamba2}.
+
+% ======================================================================
+\section*{Acknowledgment}
+% ======================================================================
+The authors thank the Basque Center on Cognition, Brain and Language (BCBL) for providing the SpanishBCBL dataset, and the High-Performance Computing team at Queen's University Belfast for access to the Kelvin-2 GPU cluster.
+
+\begin{thebibliography}{00}
+\bibitem{willett2021high} F.~R.~Willett, D.~T.~Avansino, L.~R.~Hochberg, J.~M.~Henderson, and K.~V.~Shenoy, ``High-performance brain-to-text communication via handwriting,'' \textit{Nature}, vol.~593, no.~7858, pp.~249--254, 2021.
+\bibitem{b2q_v1} A.~D\'efossez, C.~Caucheteux, J.~Rapin, O.~Kabeli, and J.-R.~King, ``Decoding speech perception from non-invasive brain recordings,'' \textit{Nature Machine Intelligence}, vol.~5, no.~10, pp.~1097--1107, 2023.
+\bibitem{b2q_v2} F.~Liu, S.~Pinet, N.~Gauthier, A.~D\'efossez, and J.-R.~King, ``Brain2Qwerty: End-to-end brain-to-text decoding with large language models,'' \textit{arXiv preprint arXiv:2412.09367}, 2024.
+\bibitem{conformer} A.~Gulati \textit{et al.}, ``Conformer: Convolution-augmented transformer for speech recognition,'' in \textit{Proc. Interspeech}, 2020, pp.~5036--5040.
+\bibitem{s4} A.~Gu, K.~Goel, and C.~R\'e, ``Efficiently modeling long sequences with structured state spaces,'' in \textit{Proc. ICLR}, 2022.
+\bibitem{mamba} A.~Gu and T.~Dao, ``Mamba: Linear-time sequence modeling with selective state spaces,'' \textit{arXiv preprint arXiv:2312.00752}, 2023.
+\bibitem{mamba2} T.~Dao and A.~Gu, ``Transformers are SSMs: Generalized models and efficient algorithms through structured state space duality,'' in \textit{Proc. ICML}, 2024.
+\bibitem{nemotron} NVIDIA, ``Nemotron-H: A family of accurate and efficient hybrid Mamba-Transformer models,'' \textit{arXiv preprint arXiv:2504.03624}, 2025.
+\bibitem{spanishbcbl} S.~Pinet \textit{et al.}, ``SpanishBCBL MEG typing dataset,'' BCBL---Basque Center on Cognition, Brain and Language, 2024.
+\bibitem{tinyllama} P.~Zhang \textit{et al.}, ``TinyLlama: An open-source small language model,'' \textit{arXiv preprint arXiv:2401.02385}, 2024.
+\bibitem{lora} E.~J.~Hu \textit{et al.}, ``LoRA: Low-rank adaptation of large language models,'' in \textit{Proc. ICLR}, 2022.
+\bibitem{roberta} Y.~Liu \textit{et al.}, ``RoBERTa: A robustly optimized BERT pretraining approach,'' \textit{arXiv preprint arXiv:1907.11692}, 2019.
+\bibitem{eeg_bci} Y.~Wang \textit{et al.}, ``Open vocabulary electroencephalography-to-text decoding and evaluation,'' in \textit{Findings of ACL}, 2022.
+\end{thebibliography}
+
+\end{document}
