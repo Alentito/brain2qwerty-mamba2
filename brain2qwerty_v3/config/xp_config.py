@@ -11,6 +11,16 @@ import typing as tp
 from .model_config import build_encoder_config
 
 
+def _normalise_subject(s: str) -> str:
+    """Map S15 / Pinet2024Meg-S15 / Pinet2024Meg/S15 -> Pinet2024Meg/S15."""
+    s = str(s).strip()
+    if s.startswith("Pinet2024Meg/"):
+        return s
+    if s.startswith("Pinet2024Meg-"):
+        return "Pinet2024Meg/" + s[len("Pinet2024Meg-"):]
+    return f"Pinet2024Meg/{s}"
+
+
 def _find_default_study_path() -> str:
     if "BRAIN2QWERTY_STUDIES" in os.environ:
         return os.environ["BRAIN2QWERTY_STUDIES"]
@@ -57,7 +67,7 @@ def experiment_config(
     """
     study_query = None
     if subjects:
-        formatted = [f"Pinet2024Meg-{s}" if not s.startswith("Pinet2024Meg-") else s for s in subjects]
+        formatted = [_normalise_subject(s) for s in subjects]
         study_query = f"subject in {formatted!r}"
 
     base_lr = lr if lr is not None else (3e-4 if "mamba" in core else 8e-4)
