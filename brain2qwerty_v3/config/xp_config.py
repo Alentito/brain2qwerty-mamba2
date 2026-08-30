@@ -108,8 +108,8 @@ def experiment_config(
                 "mode": "typed_label",
                 "infra": {"folder": CACHE},
             },
-            "batch_size": 32 if small else 64,
-            "val_batch_size": 64 if small else 128,
+            "batch_size": 16 if core == "mamba_mlp" else (32 if small else 64),
+            "val_batch_size": 32 if core == "mamba_mlp" else (64 if small else 128),
             "test_batch_size": 8,
             "num_workers": 4,
             "pin_memory": True,
@@ -141,7 +141,7 @@ def experiment_config(
             "warmup_steps": 500,
             "eta_min": 1e-6,
         },
-        "accumulate_gradient_batches": 2,
+        "accumulate_gradient_batches": 4 if core == "mamba_mlp" else 2,
         "precision": "bf16-mixed",
     }
 

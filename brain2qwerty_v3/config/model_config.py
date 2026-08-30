@@ -62,7 +62,7 @@ def build_encoder_config(core: str = "mamba3_hybrid_stabilized", small: bool = F
             "expand": 2,
             "d_conv": 4,
             "ngroups": 1,
-            "head_chunk": 8,
+            "head_chunk": 4,
             "ff_mult": 4,
             "dropout": 0.1,
         }
