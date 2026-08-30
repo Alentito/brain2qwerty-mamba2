@@ -10,10 +10,29 @@ import typing as tp
 
 from .model_config import build_encoder_config
 
-STUDY_PATH = os.environ.get(
-    "BRAIN2QWERTY_STUDIES", str(Path.home() / "brain2qwerty_data" / "studies")
-)
-CACHE = os.environ.get("BRAIN2QWERTY_CACHE", str(Path.home() / ".cache" / "brain2qwerty"))
+
+def _find_default_study_path() -> str:
+    if "BRAIN2QWERTY_STUDIES" in os.environ:
+        return os.environ["BRAIN2QWERTY_STUDIES"]
+    cluster_path = Path.home() / "sharedscratch" / "B2Q" / "code" / "SpanishBCBL_3subj"
+    if cluster_path.exists():
+        return str(cluster_path)
+    if Path("SpanishBCBL_3subj").exists():
+        return str(Path("SpanishBCBL_3subj").resolve())
+    return str(Path.home() / "brain2qwerty_data" / "studies")
+
+
+def _find_default_cache() -> str:
+    if "BRAIN2QWERTY_CACHE" in os.environ:
+        return os.environ["BRAIN2QWERTY_CACHE"]
+    cluster_cache = Path.home() / "sharedscratch" / "B2Q" / "cache_v1mamba"
+    if cluster_cache.exists():
+        return str(cluster_cache)
+    return str(Path.home() / ".cache" / "b2q_v1mamba")
+
+
+STUDY_PATH = _find_default_study_path()
+CACHE = _find_default_cache()
 RESULTS = os.environ.get("BRAIN2QWERTY_RESULTS", str(Path(CACHE) / "results"))
 
 # Word-level contrastive target + LoRA decoder LLM (TinyLlama multilingual embeddings)
@@ -118,16 +137,18 @@ def experiment_config(
 
 
 def debug_config(core: str = "mamba3_hybrid_stabilized") -> dict:
-    """Smoke-test config: single timeline, fast sanity check."""
-    cfg = experiment_config(core=core, small=True)
-    cfg["data"]["study"]["query"] = "timeline_index == 0"
-    cfg["data"]["batch_size"] = 4
-    cfg["data"]["val_batch_size"] = 4
+    """Smoke-test config: fast sanity check with 3 subjects."""
+    cfg = experiment_config(core=core, small=True, subjects=["S15", "S16", "S6"])
+    cfg["data"]["batch_size"] = 2
+    cfg["data"]["val_batch_size"] = 2
+    cfg["data"]["test_batch_size"] = 2
     cfg["data"]["num_workers"] = 0
     cfg["data"]["persistent_workers"] = False
-    cfg["max_epochs"] = 3
+    cfg["data"]["pin_memory"] = False
+    cfg["max_epochs"] = 2
     cfg["ctc_start_epoch"] = 0
     cfg["contrastive_start_epoch"] = 0
     cfg["llm_start_epoch"] = 0
     cfg["accumulate_gradient_batches"] = 1
+    cfg["save_checkpoints"] = False
     return cfg
