@@ -27,7 +27,7 @@ from neuraltrain.utils import WandbLoggerConfig
 
 from . import models as _models  # noqa: F401  (registers ConvConformer + ConvMambaHybrid)
 from . import transforms as _transforms  # noqa: F401  (registers EventsTransforms)
-from .callbacks import PredictionCSVCallback
+from .callbacks import PredictionCSVCallback, TrainingTimeProfilingCallback
 from .config.xp_config import LLM, RESULTS, WORD_EXTRACTOR
 from .data import SentenceDataset
 from .metrics import SemanticErrorRate
@@ -277,7 +277,10 @@ class Experiment(pydantic.BaseModel):
         accel, devices = accelerator(self.devices)
         if self.eval_only:
             devices = 1
-        callbacks: list[pl.Callback] = [PredictionCSVCallback(save_dir=self.output_dir)]
+        callbacks: list[pl.Callback] = [
+            PredictionCSVCallback(save_dir=self.output_dir),
+            TrainingTimeProfilingCallback(save_dir=self.output_dir),
+        ]
         if self.save_checkpoints:
             callbacks += [
                 ModelCheckpoint(
