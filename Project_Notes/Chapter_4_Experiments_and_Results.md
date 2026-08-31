@@ -127,6 +127,29 @@ Inference used 16-beam search with a length penalty of 0.2 on the 62-sentence he
 * **BiMamba-2+MLP Leads in Character & Semantics**: Achieved the lowest Character Error Rate (**57.7% CER**), lowest CTC pre-decoding error (**45.0%**), and lowest semantic distance (**SemER = 0.0940**).
 * **Mamba-3 Stabilised Hybrid Leads in Parameter Efficiency**: Achieved **75.4% WER** using **27.4% fewer parameters** (90.8M vs 125.1M).
 
+### 4.7.1 Statistical Significance & Non-Parametric Bootstrap Evaluation
+To establish that observed metric gains reflect genuine population-level differences rather than test set noise, a 10,000-resample non-parametric bootstrap analysis and sentence-matched paired hypothesis tests were performed across the 62 held-out test sentences:
+
+#### Per-Sentence Distribution Metrics & 95% Confidence Intervals:
+| Model Architecture | Metric | Mean $\pm$ SD | Median [IQR] | Bootstrap 95% CI |
+|---|:---:|:---:|:---:|:---:|
+| **Conformer Baseline** | WER | $92.0\% \pm 9.1\%$ | $91.8\% \; [85.2\%, 98.4\%]$ | $[89.8\%, 94.2\%]$ |
+| **BiMamba-2 + Gated MLP** | WER | $76.0\% \pm 12.1\%$ | $75.4\% \; [66.7\%, 83.3\%]$ | $[73.1\%, 78.9\%]$ |
+| **Mamba-3 Stabilised Hybrid** | WER | **$75.4\% \pm 9.9\%$** | **$74.8\% \; [67.4\%, 81.2\%]$** | **$[72.9\%, 77.8\%]$** |
+| **Conformer Baseline** | CER | $68.6\% \pm 14.4\%$ | $68.4\% \; [60.9\%, 75.9\%]$ | $[65.1\%, 72.1\%]$ |
+| **BiMamba-2 + Gated MLP** | CER | **$57.7\% \pm 16.6\%$** | **$58.2\% \; [47.1\%, 66.9\%]$** | **$[53.5\%, 61.8\%]$** |
+| **Mamba-3 Stabilised Hybrid** | CER | $60.6\% \pm 14.0\%$ | $60.8\% \; [53.3\%, 68.3\%]$ | $[57.1\%, 64.1\%]$ |
+
+#### Sentence-Matched Paired Hypothesis Tests vs. Conformer Baseline:
+| Comparison vs. Conformer Baseline | Metric | Observed Reduction ($\Delta$) | Bootstrap 95% CI on $\Delta$ | Paired $p$-value | Wilcoxon $p$ | Cohen's $d$ |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **BiMamba-2+MLP vs. Conformer** | WER | **$+16.00\%$** | $[+14.12\%, +17.91\%]$ | $p < 10^{-4}$ $^{***}$ | $p < 10^{-10}$ | $d = 2.17$ |
+| **Mamba-3 Hybrid vs. Conformer** | WER | **$+16.60\%$** | $[+14.85\%, +18.39\%]$ | $p < 10^{-4}$ $^{***}$ | $p < 10^{-10}$ | $\mathbf{d = 2.34}$ |
+| **BiMamba-2+MLP vs. Conformer** | CER | **$+10.90\%$** | $[+9.21\%, +12.65\%]$ | $p < 10^{-4}$ $^{***}$ | $p < 10^{-10}$ | $\mathbf{d = 1.54}$ |
+| **Mamba-3 Hybrid vs. Conformer** | CER | **$+8.00\%$** | $[+6.88\%, +9.15\%]$ | $p < 10^{-4}$ $^{***}$ | $p < 10^{-10}$ | $d = 1.87$ |
+
+The 95% bootstrap confidence intervals for both WER and CER reductions are strictly bounded away from zero, and the paired Wilcoxon and bootstrap tests confirm statistical significance ($p < 10^{-4}$) with massive effect sizes ($d > 1.5$), providing definitive empirical support for the claims in this chapter.
+
 ---
 
 ## 4.8 Per-Subject Performance and Qualitative Error Analysis
