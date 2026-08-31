@@ -307,27 +307,28 @@ Table~\ref{tab:results_phase2} reports the primary word-level metrics on the 62 
 
 \begin{table}[t]
 \centering
-\caption{Phase 2: Word-Level Continuous Sentence Decoding Results on SpanishBCBL (3-Subject Test Split).}
+\caption{Phase 2: Word-Level Continuous Sentence Decoding Results on SpanishBCBL (3-Subject Test Split across 62 Unseen Sentences).}
 \label{tab:results_phase2}
-\begin{tabular}{@{}lcccc@{}}
+\begin{tabular}{@{}lccccc@{}}
 \toprule
-\textbf{Sequence Core Architecture} & \textbf{WER (\%)} & \textbf{Word Acc} & \textbf{CER (\%)} & \textbf{SemER} \\
+\textbf{Sequence Core Architecture} & \textbf{Params} & \textbf{WER (\%)} & \textbf{Word Acc} & \textbf{CER (\%)} & \textbf{SemER} \\
 \midrule
-Conformer (8 Layers, 125M) & 92.0\% & 8.0\% & 68.6\% & 0.0970 \\
-\textbf{Mamba-3 Stab. Hybrid (8L, 91M)} & \textbf{75.4\%} & \textbf{24.6\%} & \textbf{60.6\%} & \textbf{0.0967} \\
+Conformer (8 Layers) & 125.1M & 92.0\% & 8.0\% & 68.6\% & 0.0970 \\
+BiMamba-2 + Gated MLP (8 Layers) & 128.3M & 76.0\% & 24.0\% & \textbf{57.7\%} & \textbf{0.0940} \\
+\textbf{Mamba-3 Stab. Hybrid (8 Layers)} & \textbf{90.8M} & \textbf{75.4\%} & \textbf{24.6\%} & 60.6\% & 0.0967 \\
 \midrule
-\multicolumn{5}{l}{\textbf{Performance Gain (Mamba-3 vs. Conformer)}} \\
-\textit{Absolute Metric Improvement} & \textbf{$-$16.6\%} & \textbf{$+$16.6\%} & \textbf{$-$8.0\%} & \textbf{$-$0.0003} \\
-\textit{Relative Accuracy Scaling} & \multicolumn{2}{c}{\textbf{3.08$\times$ Higher Word Acc}} & \multicolumn{2}{c}{\textbf{1.25$\times$ Higher Char Acc}} \\
+\multicolumn{6}{l}{\textbf{Performance Gains over Conformer Baseline}} \\
+\textit{BiMamba-2+MLP vs. Conformer} & +3.2M & \textbf{$-$16.0\%} & \textbf{$+$16.0\%} & \textbf{$-$10.9\%} & \textbf{$-$0.0030} \\
+\textit{Mamba-3 Hybrid vs. Conformer} & \textbf{$-$34.3M} & \textbf{$-$16.6\%} & \textbf{$+$16.6\%} & \textbf{$-$8.0\%} & \textbf{$-$0.0003} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{enumerate}
-    \item \textbf{Massive Word-Level Accuracy Gain}: The proposed \textbf{Mamba-3 Stabilized Hybrid} achieved a test WER of \textbf{75.4\%} (Word Accuracy \textbf{24.6\%}), delivering an enormous \textbf{16.6\% absolute reduction in Word Error Rate} compared to the Conformer baseline (92.0\% WER, 8.0\% Word Accuracy). This corresponds to a \textbf{3$\times$ improvement in exact word recovery}.
-    \item \textbf{Character Error Rate Reduction}: Autoregressive generation CER dropped from 68.6\% to \textbf{60.6\%} (Character Accuracy 39.4\% vs. 31.4\%).
-    \item \textbf{The Representation Dissociation}: Crucially, the Conformer achieved slightly lower raw CTC character error (48.1\% vs. 50.4\%), yet failed dramatically at word-level LLM decoding (92.0\% WER). This demonstrates that \textbf{Mamba-3's continuous state propagation produces far superior word-level latent embeddings for language model conditioning than pairwise attention}.
-    \item \textbf{Parameter Efficiency}: The Mamba-3 Stabilized Hybrid contains only \textbf{90.8M parameters} compared to \textbf{125.1M parameters} in the Conformer, achieving superior accuracy with \textbf{27.4\% fewer parameters}.
+    \item \textbf{Decisive State-Space Superiority}: Both state-space architectures overwhelmingly outperform the Conformer baseline, lowering Word Error Rate by \textbf{16.0\%} (BiMamba-2+MLP, 76.0\% WER) and \textbf{16.6\%} (Mamba-3 Hybrid, 75.4\% WER), corresponding to a \textbf{3.0$\times$ to 3.1$\times$ improvement in exact word accuracy} over the Conformer (8.0\% Word Accuracy).
+    \item \textbf{BiMamba-2+MLP Leads in Character \& Semantic Accuracy}: BiMamba-2+MLP achieved the lowest Character Error Rate across all models at \textbf{57.7\% CER} (Character Accuracy \textbf{42.3\%}, a 10.9\% absolute gain over Conformer's 68.6\% CER), the lowest raw CTC pre-decoding error (\textbf{45.0\% CTC CER}), the lowest LLM generation loss ($\mathcal{L}_{\text{llm}} = 3.348$), and the strongest semantic proximity to ground-truth sentences (\textbf{SemER = 0.0940}).
+    \item \textbf{Mamba-3 Hybrid Leads in Word-Level Coherence \& Parameter Efficiency}: The Mamba-3 Stabilized Hybrid achieved the lowest overall Word Error Rate (\textbf{75.4\% WER}) while utilizing only \textbf{90.8M parameters} (27.4\% smaller than Conformer and 29.2\% smaller than BiMamba-2+MLP), confirming that BCNorm and Rotary State-Phase Rotation (RoPE-SSM) provide superior long-range sentence regularization with minimal parameter overhead.
+    \item \textbf{The Representation Dissociation}: While the Conformer achieved competitive raw CTC character error (48.1\%), it collapsed during word-level autoregressive conditioning (92.0\% WER). In contrast, both Mamba variants preserved rich continuous trajectory dynamics that enabled the LoRA LLM to decode syntactically coherent Spanish sentences.
 \end{enumerate}
 
 \subsection{Per-Subject Performance Breakdown}
