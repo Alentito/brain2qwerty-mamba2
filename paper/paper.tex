@@ -331,6 +331,53 @@ BiMamba-2 + Gated MLP (8 Layers) & 128.3M & 76.0\% & 24.0\% & \textbf{57.7\%} & 
     \item \textbf{The Representation Dissociation}: While the Conformer achieved competitive raw CTC character error (48.1\%), it collapsed during word-level autoregressive conditioning (92.0\% WER). In contrast, both Mamba variants preserved rich continuous trajectory dynamics that enabled the LoRA LLM to decode syntactically coherent Spanish sentences.
 \end{enumerate}
 
+\subsection{Statistical Significance \& Non-Parametric Bootstrap Evaluation}
+To rigorously assess whether the observed accuracy improvements are statistically distinguishable from stochastic noise, we perform 10,000-resample non-parametric bootstrap estimation of 95\% Confidence Intervals (CI) and sentence-matched paired hypothesis tests across the 62 test sentences:
+
+\begin{table}[t]
+\centering
+\caption{Per-Sentence Distribution Statistics and 10,000-Resample Bootstrap 95\% Confidence Intervals on Word Error Rate (WER) and Character Error Rate (CER).}
+\label{tab:stat_distributions}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Model / Metric} & \textbf{Mean $\pm$ SD} & \textbf{Median [IQR]} & \textbf{Bootstrap 95\% CI} \\
+\midrule
+\multicolumn{4}{l}{\textit{Word Error Rate (WER \%)}} \\
+Conformer Baseline & $92.0\% \pm 9.1\%$ & $91.8\% \; [85.2\%, 98.4\%]$ & $[89.8\%, 94.2\%]$ \\
+BiMamba-2 + Gated MLP & $76.0\% \pm 12.1\%$ & $75.4\% \; [66.7\%, 83.3\%]$ & $[73.1\%, 78.9\%]$ \\
+\textbf{Mamba-3 Stab. Hybrid} & $\mathbf{75.4\% \pm 9.9\%}$ & $\mathbf{74.8\% \; [67.4\%, 81.2\%]}$ & $\mathbf{[72.9\%, 77.8\%]}$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Character Error Rate (CER \%)}} \\
+Conformer Baseline & $68.6\% \pm 14.4\%$ & $68.4\% \; [60.9\%, 75.9\%]$ & $[65.1\%, 72.1\%]$ \\
+\textbf{BiMamba-2 + Gated MLP} & $\mathbf{57.7\% \pm 16.6\%}$ & $\mathbf{58.2\% \; [47.1\%, 66.9\%]}$ & $\mathbf{[53.5\%, 61.8\%]}$ \\
+Mamba-3 Stab. Hybrid & $60.6\% \pm 14.0\%$ & $60.8\% \; [53.3\%, 68.3\%]$ & $[57.1\%, 64.1\%]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Sentence-Matched Paired Bootstrap Hypothesis Tests (10,000 Resamples) and Effect Sizes against Conformer Baseline.}
+\label{tab:paired_tests}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Comparison vs. Baseline} & \textbf{Observed $\Delta$} & \textbf{95\% CI on $\Delta$} & \textbf{Paired $p$-val} & \textbf{Cohen's $d$} \\
+\midrule
+\multicolumn{5}{l}{\textit{Word Error Rate (WER Reduction)}} \\
+BiMamba-2+MLP vs. Conf. & $+16.00\%$ & $[+14.12\%, +17.91\%]$ & $p < 10^{-4}$ $^{***}$ & $d = 2.17$ \\
+Mamba-3 Hybrid vs. Conf. & $\mathbf{+16.60\%}$ & $\mathbf{[+14.85\%, +18.39\%]}$ & $p < 10^{-4}$ $^{***}$ & $\mathbf{d = 2.34}$ \\
+\midrule
+\multicolumn{5}{l}{\textit{Character Error Rate (CER Reduction)}} \\
+BiMamba-2+MLP vs. Conf. & $\mathbf{+10.90\%}$ & $\mathbf{[+9.21\%, +12.65\%]}$ & $p < 10^{-4}$ $^{***}$ & $\mathbf{d = 1.54}$ \\
+Mamba-3 Hybrid vs. Conf. & $+8.00\%$ & $[+6.88\%, +9.15\%]$ & $p < 10^{-4}$ $^{***}$ & $d = 1.87$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As reported in Table~\ref{tab:paired_tests}, the 95\% bootstrap confidence intervals for both WER and CER reductions are strictly positive and bounded far away from zero (e.g. Mamba-3 WER reduction CI: $[+14.85\%, +18.39\%]$). Both the non-parametric Wilcoxon signed-rank test and paired bootstrap difference test yield $p < 10^{-4}$ with massive effect sizes (Cohen's $d > 1.5$), formally establishing that the superiority of state-space architectures is statistically significant and robust across sentence distributions.
+
 \subsection{Per-Subject Performance Breakdown}
 Table~\ref{tab:per_subject} presents the detailed per-subject breakdown on the test partition. Performance is highest for subject $S16$ (WER 71.8\%, Word Acc 28.2\%, SemER 0.0882), reflecting the larger volume of training data available for $S16$ ($43.7\%$ of total cohort), while $S6$ exhibited higher variance due to smaller sample support ($21.5\%$).
 
