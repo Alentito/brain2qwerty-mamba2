@@ -360,29 +360,31 @@ def main(argv: list[str] | None = None) -> None:
     p_debug = sub.add_parser("debug", help="1-timeline smoke test")
     p_debug.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
 
-    # -- train ---------------------------------------------------------------
-    p_train = sub.add_parser("train", help="full training")
-    p_train.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
-    p_train.add_argument("--resume", default=None, help="checkpoint to resume from")
-    p_train.add_argument("--seed", type=int, default=None, help="override the seed")
-    p_train.add_argument("--lr", type=float, default=None, help="override learning rate")
-    p_train.add_argument("--wd", type=float, default=None, help="override weight decay")
-    p_train.add_argument("--subjects", nargs="+", default=None, help="subjects")
-    p_train.add_argument("--tag", default=None, help="output directory suffix tag")
-    p_train.add_argument("--devices", type=int, default=None, help="GPU count")
+    # -- train / run ---------------------------------------------------------
+    for cmd in ("train", "run"):
+        p_t = sub.add_parser(cmd, help="full training")
+        p_t.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
+        p_t.add_argument("--resume", default=None, help="checkpoint to resume from")
+        p_t.add_argument("--seed", type=int, default=None, help="override the seed")
+        p_t.add_argument("--lr", type=float, default=None, help="override learning rate")
+        p_t.add_argument("--wd", type=float, default=None, help="override weight decay")
+        p_t.add_argument("--subjects", nargs="+", default=None, help="subjects")
+        p_t.add_argument("--tag", default=None, help="output directory suffix tag")
+        p_t.add_argument("--devices", type=int, default=None, help="GPU count")
+        add_wandb_args(p_t)
 
     # -- eval ----------------------------------------------------------------
     p_eval = sub.add_parser("eval", help="evaluate a checkpoint on the test split")
     p_eval.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
     p_eval.add_argument("--ckpt", required=True, help="checkpoint to evaluate")
+    add_wandb_args(p_eval)
 
     # -- cache ---------------------------------------------------------------
     p_cache = sub.add_parser("cache", help="pre-warm the feature cache")
     p_cache.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
     p_cache.add_argument("--debug", action="store_true", help="only the debug subset")
 
-    for p in (p_debug, p_train, p_eval):
-        add_wandb_args(p)
+    add_wandb_args(p_debug)
     args = parser.parse_args(argv)
 
     core = getattr(args, "core", "mamba3_hybrid_stabilized")
