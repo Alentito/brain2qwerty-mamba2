@@ -1,0 +1,31 @@
+{
+  "ckpt": "checkpoints/small-mamba-S15-S16-S6-lr3e4/best.ckpt",
+  "core": "mamba",
+  "n_sentences_explained": 2,
+  "memory_horizon": {
+    "block0-fwd": {
+      "lag90_keystrokes": 26
+    },
+    "block0-bwd": {
+      "lag90_keystrokes": 0
+    },
+    "block1-fwd": {
+      "lag90_keystrokes": 17
+    },
+    "block1-bwd": {
+      "lag90_keystrokes": 0
+    },
+    "block2-fwd": {
+      "lag90_keystrokes": 22
+    },
+    "block2-bwd": {
+      "lag90_keystrokes": 0
+    },
+    "block3-fwd": {
+      "lag90_keystrokes": 18
+    },
+    "block3-bwd": {
+      "lag90_keystrokes": 0
+    }
+  }
+}

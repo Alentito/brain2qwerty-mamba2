@@ -1,0 +1,6 @@
+{
+  "ckpt": "checkpoints/small-transformer-S15-S16-S6-lr1e4/best.ckpt",
+  "core": "transformer",
+  "n_sentences_explained": 6,
+  "memory_horizon": {}
+}
