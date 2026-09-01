@@ -45,8 +45,10 @@ STUDY_PATH = _find_default_study_path()
 CACHE = _find_default_cache()
 RESULTS = os.environ.get("BRAIN2QWERTY_RESULTS", str(Path(CACHE) / "results"))
 
-# Word-level contrastive target + LoRA decoder LLM (TinyLlama multilingual embeddings)
-LLM = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+# Word-level contrastive target + LoRA decoder LLM.
+# Qwen3.5-0.8B (Apache 2.0, 201 languages incl. Spanish) replaces the
+# English-centric TinyLlama-1.1B at a similar parameter count.
+LLM = "Qwen/Qwen3.5-0.8B"
 WORD_EXTRACTOR = {"model_name": LLM, "layers": 0, "contextualized": False}
 
 
@@ -122,6 +124,9 @@ def experiment_config(
             "p_time_mask": 0.2,
             "freq_mask_param": 400,
             "time_stretch": True,
+            # Sensor dropout: zero 10% of MEG channels per batch for spatial
+            # robustness / cross-session invariance.
+            "channel_dropout": 0.1,
         },
         "brain_model_config": build_encoder_config(core=core, small=small),
         # Staged 3-loss schedule: CTC from 0, +contrastive at 150, +LLM at 225
@@ -132,7 +137,10 @@ def experiment_config(
         "contrastive_start_epoch": 150,
         "llm_start_epoch": 225,
         "llm_name": LLM,
-        "lora_rank": 2,
+        # Qwen3.5-0.8B has more capacity than TinyLlama-1.1B; raise the LoRA rank
+        # from 2 -> 8 so the adapter can actually learn the neural->text mapping.
+        "lora_rank": 8,
+        "lora_alpha_value": 16,
         "word_extractor_config": WORD_EXTRACTOR,
         "num_beams": 16,
         "optimizer_config": {"lr": base_lr, "weight_decay": base_wd},

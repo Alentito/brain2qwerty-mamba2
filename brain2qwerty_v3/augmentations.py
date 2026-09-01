@@ -22,12 +22,14 @@ class PreprocessConfig(BaseModel):
     iid_masks: bool = False
     p_time_mask: float = 0.2
     time_stretch: bool = False
+    channel_dropout: float = 0.0  # fraction of MEG channels zeroed per sample
     model_config = pydantic.ConfigDict(extra="forbid")
 
 
 class Preprocess(nn.Module):
-    """Adds white noise, a constant per-channel offset, optional time-stretch, and
-    optional time/frequency masking (SpecAugment-style) to a (B, T, C) MEG batch."""
+    """Adds white noise, a constant per-channel offset, optional time-stretch,
+    optional time/frequency masking (SpecAugment-style), and optional sensor
+    (channel) dropout to a (B, T, C) MEG batch."""
 
     def __init__(
         self,
@@ -38,6 +40,7 @@ class Preprocess(nn.Module):
         iid_masks: bool = False,
         p_time_mask: float = 0.2,
         time_stretch: bool = False,
+        channel_dropout: float = 0.0,
     ):
         super().__init__()
         self.whiteNoiseSD = whiteNoiseSD
@@ -47,6 +50,7 @@ class Preprocess(nn.Module):
         self.iid_masks = iid_masks
         self.p_time_mask = p_time_mask
         self.time_stretch = time_stretch
+        self.channel_dropout = channel_dropout
 
         if self.time_mask_param > 0:
             self.time_mask = TimeMasking(
@@ -79,6 +83,14 @@ class Preprocess(nn.Module):
                 align_corners=False,
             ).transpose(1, 2)
             batch["neuro_sizes"] = (batch["neuro_sizes"] * stretch_factor).long()
+
+        if self.channel_dropout > 0:
+            # Zero whole sensor channels per sample (B, 1, C) keep-mask.
+            keep = (
+                torch.rand(neuro.shape[0], 1, neuro.shape[2], device=neuro.device)
+                > self.channel_dropout
+            )
+            neuro = neuro * keep
 
         if self.time_mask_param > 0:
             neuro = self.time_mask(neuro)

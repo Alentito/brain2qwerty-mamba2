@@ -101,12 +101,14 @@ def test_full_pipeline_run_step(core):
     word_pool_dim = cfg.dim
     network = cfg.build(n_in_channels=306, n_outputs=29)
 
-    llm_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    llm_name = "Qwen/Qwen3.5-0.8B"
     tokenizer = AutoTokenizer.from_pretrained(llm_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    llm = AutoModelForCausalLM.from_pretrained(llm_name, torch_dtype=torch.float32)
+    llm = AutoModelForCausalLM.from_pretrained(
+        llm_name, torch_dtype=torch.float32, trust_remote_code=True
+    )
     lora_cfg = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=2,

@@ -152,7 +152,7 @@ class NeuroLLMModule(pl.LightningModule):
             return torch.zeros(
                 0, base.config.hidden_size, device=self.device, dtype=base.dtype
             )
-        return base.model.embed_tokens(torch.tensor(ids, device=self.device))
+        return base.get_input_embeddings()(torch.tensor(ids, device=self.device))
 
     def _pad_word_embeds(self, word_embeds_list):
         B = len(word_embeds_list)
@@ -211,7 +211,7 @@ class NeuroLLMModule(pl.LightningModule):
             padding=True,
             add_special_tokens=False,
         ).to(self.device)
-        target_emb = base.model.embed_tokens(targets.input_ids)
+        target_emb = base.get_input_embeddings()(targets.input_ids)
         prefixes = self._build_llm_prefixes(adapted_words, neuro_mask, ctc_texts, B)
 
         sequences, all_labels = [], []

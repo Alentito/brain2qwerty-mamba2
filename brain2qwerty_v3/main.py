@@ -199,17 +199,37 @@ class Experiment(pydantic.BaseModel):
         llm = AutoModelForCausalLM.from_pretrained(
             self.llm_name, torch_dtype=torch.bfloat16, trust_remote_code=True
         )
-        llm = get_peft_model(
-            llm,
-            LoraConfig(
-                task_type=TaskType.CAUSAL_LM,
-                inference_mode=False,
-                r=self.lora_rank,
-                lora_alpha=self.lora_alpha_value,
-                lora_dropout=self.lora_dropout,
-                target_modules=list(self.lora_target_modules),
-            ),
-        )
+        try:
+            llm = get_peft_model(
+                llm,
+                LoraConfig(
+                    task_type=TaskType.CAUSAL_LM,
+                    inference_mode=False,
+                    r=self.lora_rank,
+                    lora_alpha=self.lora_alpha_value,
+                    lora_dropout=self.lora_dropout,
+                    target_modules=list(self.lora_target_modules),
+                ),
+            )
+        except ValueError:
+            # Hybrid architectures (e.g. Qwen3.5 Gated-DeltaNet + attention) may
+            # not expose all of q/k/v/o_proj; fall back to every linear layer.
+            log.warning(
+                "LoRA target modules %s not found in %s; falling back to 'all-linear'",
+                self.lora_target_modules,
+                self.llm_name,
+            )
+            llm = get_peft_model(
+                llm,
+                LoraConfig(
+                    task_type=TaskType.CAUSAL_LM,
+                    inference_mode=False,
+                    r=self.lora_rank,
+                    lora_alpha=self.lora_alpha_value,
+                    lora_dropout=self.lora_dropout,
+                    target_modules="all-linear",
+                ),
+            )
         llm.print_trainable_parameters()
         tokenizer = AutoTokenizer.from_pretrained(self.llm_name)
         if tokenizer.pad_token is None:
