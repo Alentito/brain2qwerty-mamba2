@@ -6,8 +6,10 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=12:00:00
-#SBATCH --array=0-1                    # 0: Conformer (19-Subj), 1: Mamba-3 Stabilized Hybrid (19-Subj)
+#SBATCH --time=48:00:00
+#SBATCH --array=0-2%1                  # 0: Conformer, 1: Mamba-3 Stabilized Hybrid, 2: BiMamba-2 + MLP
+                                       # %1 = ONLY ONE task at a time: we have a single A100,
+                                       # concurrent tasks would share GPU 0 and OOM together.
 #SBATCH --output=slurm/logs/19subj_%A_%a.out
 
 # ============================================================================ #
@@ -42,6 +44,20 @@ export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export OMP_NUM_THREADS=8
 export PYTHONUNBUFFERED=1
+
+# Qwen3.5-0.8B weights: compute nodes often have no internet. Pre-download on
+# the login node ONCE before submitting:
+#   source ~/sharedscratch/conda/envs/b2q/bin/activate
+#   export HF_HOME=$HOME/sharedscratch/B2Q/hf_cache
+#   huggingface-cli download Qwen/Qwen3.5-0.8B
+# then the job runs fully offline:
+export HF_HOME="${HF_HOME:-$HOME/sharedscratch/B2Q/hf_cache}"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# STALE CACHE WARNING: word-embedding caches under $BRAIN2QWERTY_CACHE built
+# with TinyLlama are invalid now that LLM=Qwen3.5-0.8B. If a run crashes with
+# an embedding-dim mismatch, delete the word-embedding cache and rerun.
 
 echo "=== Starting Brain2Qwerty V3 (19-Participant Dataset) Task $SLURM_ARRAY_TASK_ID on $(hostname) ==="
 echo "Study Path:  $BRAIN2QWERTY_STUDIES"

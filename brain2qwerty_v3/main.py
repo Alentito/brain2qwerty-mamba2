@@ -391,6 +391,8 @@ def main(argv: list[str] | None = None) -> None:
         p_t.add_argument("--seed", type=int, default=None, help="override the seed")
         p_t.add_argument("--lr", type=float, default=None, help="override learning rate")
         p_t.add_argument("--wd", type=float, default=None, help="override weight decay")
+        p_t.add_argument("--batch_size", type=int, default=None, help="override batch size")
+        p_t.add_argument("--accumulate_grad_batches", type=int, default=None, help="gradient accumulation batches")
         p_t.add_argument("--subjects", nargs="+", default=None, help="subjects")
         p_t.add_argument("--tag", default=None, help="output directory suffix tag")
         p_t.add_argument("--devices", type=int, default=None, help="GPU count")
@@ -429,6 +431,10 @@ def main(argv: list[str] | None = None) -> None:
             extra_kw["lr"] = args.lr
         if getattr(args, "wd", None) is not None:
             extra_kw["wd"] = args.wd
+        if getattr(args, "batch_size", None) is not None:
+            extra_kw["batch_size"] = args.batch_size
+        if getattr(args, "accumulate_grad_batches", None) is not None:
+            extra_kw["accumulate_grad_batches"] = args.accumulate_grad_batches
         tag = getattr(args, "tag", None)
         if tag:
             extra_kw["output_dir"] = str(Path(RESULTS) / f"v3-{core}-{tag}")

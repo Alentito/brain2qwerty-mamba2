@@ -46,14 +46,16 @@ class RMSNorm(nn.Module):
 
 
 def _segsum(x: torch.Tensor) -> torch.Tensor:
-    """Stable segment sum: (..., T) -> (..., T, T), lower-triangular."""
+    """Stable segment sum: (..., T) -> (..., T, T), lower-triangular.
+    
+    Optimized via 1D prefix-sum broadcasting to avoid allocating O(T^3) intermediate tensors.
+    """
     T = x.size(-1)
-    mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=x.device), -1)
-    x = x.unsqueeze(-1).expand(*x.shape, T)
-    x = x.masked_fill(~mask, 0)
-    x_segsum = torch.cumsum(x, dim=-2)
+    c = torch.cumsum(x, dim=-1)
+    # diff[..., t, s] = c[..., t] - c[..., s] = sum_{k=s+1}^t x[..., k]
+    diff = c.unsqueeze(-1) - c.unsqueeze(-2)
     mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=x.device), 0)
-    return x_segsum.masked_fill(~mask, float("-inf"))
+    return diff.masked_fill(~mask, float("-inf"))
 
 
 def _apply_rope_2d(m: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
