@@ -317,17 +317,33 @@ class BiMambaGatedMLPBlock(nn.Module):
 class BiMambaGatedMLPEncoder(nn.Module):
     """Stack of BiMambaGatedMLPBlocks (Round 3 Champion Architecture)."""
 
-    def __init__(self, dim: int, n_layer: int = 8, dropout: float = 0.1, **mamba_kwargs):
+    def __init__(
+        self,
+        dim: int,
+        n_layer: int = 8,
+        dropout: float = 0.1,
+        gradient_checkpointing: bool = True,
+        **mamba_kwargs,
+    ):
         super().__init__()
         self.blocks = nn.ModuleList(
             BiMambaGatedMLPBlock(dim, dropout=dropout, **mamba_kwargs)
             for _ in range(n_layer)
         )
         self.final_norm = RMSNorm(dim)
+        # Recompute block internals (the O(H*T^2) SSD maps) during backward
+        # instead of storing them: ~35% slower step, ~4x lower peak memory.
+        self.gradient_checkpointing = gradient_checkpointing
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ckpt = (
+            self.gradient_checkpointing and self.training and torch.is_grad_enabled()
+        )
         for blk in self.blocks:
-            x = blk(x)
+            if ckpt:
+                x = torch.utils.checkpoint.checkpoint(blk, x, use_reentrant=False)
+            else:
+                x = blk(x)
         return self.final_norm(x)
 
 
@@ -345,6 +361,7 @@ class HybridMambaEncoder(nn.Module):
         ff_dropout: float = 0.0,
         dropout: float = 0.1,
         rotary_pos_emb: bool = True,
+        gradient_checkpointing: bool = True,
         mixer_cls=Mamba2Mixer,
         **mamba_kwargs: tp.Any,
     ):
@@ -368,15 +385,32 @@ class HybridMambaEncoder(nn.Module):
                 blocks.append(nn.ModuleDict({"norm": norm, "mixer": mixer, "drop": nn.Dropout(dropout)}))
         self.blocks = nn.ModuleList(blocks)
         self.final_norm = RMSNorm(dim)
+        # Recompute block internals (the O(H*T^2) SSD maps) during backward
+        # instead of storing them: ~35% slower step, ~4x lower peak memory.
+        self.gradient_checkpointing = gradient_checkpointing
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ckpt = (
+            self.gradient_checkpointing and self.training and torch.is_grad_enabled()
+        )
         for blk in self.blocks:
             if isinstance(blk, AttentionBlock):
-                x = blk(x)
+                if ckpt:
+                    x = torch.utils.checkpoint.checkpoint(blk, x, use_reentrant=False)
+                else:
+                    x = blk(x)
             else:
-                h = blk["norm"](x)
-                y = blk["mixer"](h)
-                x = x + blk["drop"](y)
+                def _mamba_block(inp: torch.Tensor, blk=blk) -> torch.Tensor:
+                    h = blk["norm"](inp)
+                    y = blk["mixer"](h)
+                    return inp + blk["drop"](y)
+
+                if ckpt:
+                    x = torch.utils.checkpoint.checkpoint(
+                        _mamba_block, x, use_reentrant=False
+                    )
+                else:
+                    x = _mamba_block(x)
         return self.final_norm(x)
 
 
@@ -395,6 +429,7 @@ class BiMambaGatedMLP(BaseModelConfig):
     ngroups: int = 1
     head_chunk: int = 8
     ff_mult: int = 4
+    gradient_checkpointing: bool = True
 
     def build(self, dim: int) -> nn.Module:
         kwargs = self.model_dump()
@@ -423,6 +458,7 @@ class MambaHybrid(BaseModelConfig):
     ff_dropout: float = 0.0
     rotary_pos_emb: bool = True
     dropout: float = 0.1
+    gradient_checkpointing: bool = True
 
     def build(self, dim: int) -> nn.Module:
         kwargs = self.model_dump()

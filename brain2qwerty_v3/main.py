@@ -181,9 +181,10 @@ class Experiment(pydantic.BaseModel):
     resume_ckpt: str | None = None  # resume training (trainer state) from this ckpt
     wandb_config: WandbLoggerConfig | None = None
     # Abort training if val CER stops improving (protects cluster GPU time from
-    # collapsed/diverged runs). Stage transitions at epochs 150/225 change the
-    # loss mix but CER should keep trending down, so a generous patience is safe.
-    early_stop_patience: int | None = 40
+    # collapsed/diverged runs). Patience is deliberately long: with the staged
+    # 275-epoch schedule (contrastive at 150, LLM at 225), stage-1 CTC CER can
+    # plateau for dozens of epochs before the LR decay resumes improvement.
+    early_stop_patience: int | None = 100
     early_stop_min_delta: float = 1e-3
 
     _trainer: pl.Trainer | None = None
