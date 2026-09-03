@@ -12,7 +12,7 @@ import lightning.pytorch as pl
 import pydantic
 import torch
 import torch.nn as nn
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.strategies import DDPStrategy
 from peft import LoraConfig, TaskType, get_peft_model
@@ -180,6 +180,11 @@ class Experiment(pydantic.BaseModel):
     ckpt_path: str | None = None
     resume_ckpt: str | None = None  # resume training (trainer state) from this ckpt
     wandb_config: WandbLoggerConfig | None = None
+    # Abort training if val CER stops improving (protects cluster GPU time from
+    # collapsed/diverged runs). Stage transitions at epochs 150/225 change the
+    # loss mix but CER should keep trending down, so a generous patience is safe.
+    early_stop_patience: int | None = 40
+    early_stop_min_delta: float = 1e-3
 
     _trainer: pl.Trainer | None = None
     _module: NeuroLLMModule | None = None
@@ -301,6 +306,16 @@ class Experiment(pydantic.BaseModel):
             PredictionCSVCallback(save_dir=self.output_dir),
             TrainingTimeProfilingCallback(save_dir=self.output_dir),
         ]
+        if self.early_stop_patience is not None and not self.eval_only:
+            callbacks.append(
+                EarlyStopping(
+                    monitor="val/cer_epo",
+                    mode="min",
+                    patience=self.early_stop_patience,
+                    min_delta=self.early_stop_min_delta,
+                    verbose=True,
+                )
+            )
         if self.save_checkpoints:
             callbacks += [
                 ModelCheckpoint(
