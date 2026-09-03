@@ -493,6 +493,8 @@ def main(argv: list[str] | None = None) -> None:
         p_t.add_argument("--max-epochs", type=int, default=None)
         p_t.add_argument("--contrastive-start", type=int, default=None)
         p_t.add_argument("--llm-start", type=int, default=None)
+        p_t.add_argument("--precision", default=None,
+                         help="e.g. 16-mixed for T4/P100 (no native bf16)")
         add_wandb_args(p_t)
 
     # -- eval ----------------------------------------------------------------
@@ -561,6 +563,8 @@ def main(argv: list[str] | None = None) -> None:
         cfg["contrastive_start_epoch"] = args.contrastive_start
     if getattr(args, "llm_start", None) is not None:
         cfg["llm_start_epoch"] = args.llm_start
+    if getattr(args, "precision", None) is not None:
+        cfg["precision"] = args.precision
 
     wandb = wandb_config(args, args.command, cfg.get("seed", 0))
     if wandb is not None:
