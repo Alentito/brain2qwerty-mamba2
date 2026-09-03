@@ -158,6 +158,10 @@ def experiment_config(
         },
         "accumulate_gradient_batches": accum,
         "precision": "bf16-mixed",
+        # Benchmark runs must complete all 3 stages (LLM starts at 225); early
+        # stopping on stage-1 CER amputates them. Rely on checkpoints + manual
+        # log monitoring instead.
+        "early_stop_patience": None,
     }
 
 
