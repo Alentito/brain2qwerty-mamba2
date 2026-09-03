@@ -67,18 +67,21 @@ nvidia-smi || true
 case ${SLURM_ARRAY_TASK_ID} in
     0)
         echo ">>> Running Task 0: Conformer Baseline (19 Subjects, Full Dataset)"
+        # LR halved (8e-4 -> 4e-4): effective batch dropped 128 -> 64 with the
+        # bs16 x accum4 memory fix; 8e-4 collapsed CTC to blank-only output.
         python -m brain2qwerty_v3.main run \
             --core conformer \
-            --lr 8e-4 \
+            --lr 4e-4 \
             --wd 1e-3 \
             --tag 19subj-full-dataset \
             --devices 1
         ;;
     1)
         echo ">>> Running Task 1: Mamba-3 Stabilized Hybrid (19 Subjects, Full Dataset)"
+        # LR halved (3e-4 -> 1.5e-4): same effective-batch 128 -> 64 reason.
         python -m brain2qwerty_v3.main run \
             --core mamba3_hybrid_stabilized \
-            --lr 3e-4 \
+            --lr 1.5e-4 \
             --wd 1e-3 \
             --tag 19subj-full-dataset \
             --devices 1
