@@ -180,6 +180,16 @@ class Experiment(pydantic.BaseModel):
     ckpt_path: str | None = None
     resume_ckpt: str | None = None  # resume training (trainer state) from this ckpt
     wandb_config: WandbLoggerConfig | None = None
+
+    # Decoder-swap / warm-start: load a donor checkpoint but reset the
+    # LLM-specific weights (llm.*, word_proj_adapter.*), keeping the encoder,
+    # CTC head and word segmenter. Combine with a small encoder_lr (or
+    # freeze_encoder) to re-run stages 2+3 against a new decoder LLM.
+    init_ckpt: str | None = None
+    freeze_encoder: bool = False
+    # Use Unsloth FastLanguageModel for LoRA (faster/lower-memory); falls back
+    # to the standard PEFT path automatically if unavailable or incompatible.
+    use_unsloth: bool = False
     # Abort training if val CER stops improving (protects cluster GPU time from
     # collapsed/diverged runs). Patience is deliberately long: with the staged
     # 275-epoch schedule (contrastive at 150, LLM at 225), stage-1 CTC CER can
@@ -194,13 +204,34 @@ class Experiment(pydantic.BaseModel):
         pl.seed_everything(self.seed, workers=True)
         torch.set_float32_matmul_precision("medium")
 
-    def _build_module(self, loaders: dict) -> NeuroLLMModule:
-        word_embed_lookup = prepare_word_embeddings(self.data, self.word_extractor_config)
-        n_in_channels = loaders["train"].dataset[0].data["neuros"].shape[1]
-        network = self.brain_model_config.build(
-            n_in_channels=n_in_channels, n_outputs=self.num_classes
-        )
-        word_pool_dim = getattr(self.brain_model_config, "dim", 1024)
+    def _build_llm(self):
+        """Load the decoder LLM + LoRA. Unsloth path when requested, with
+        automatic fallback to the standard HF + PEFT path on any failure."""
+        if self.use_unsloth:
+            try:
+                from unsloth import FastLanguageModel
+
+                llm, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name=self.llm_name,
+                    dtype=torch.bfloat16,
+                    load_in_4bit=False,
+                )
+                llm = FastLanguageModel.get_peft_model(
+                    llm,
+                    r=self.lora_rank,
+                    lora_alpha=self.lora_alpha_value,
+                    lora_dropout=self.lora_dropout,
+                    target_modules=list(self.lora_target_modules),
+                    use_gradient_checkpointing="unsloth",
+                )
+                log.info("Decoder LLM loaded via Unsloth: %s", self.llm_name)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                return llm, tokenizer
+            except Exception as exc:  # noqa: BLE001 - fallback is intentional
+                log.warning(
+                    "Unsloth path failed (%s); falling back to standard PEFT", exc
+                )
 
         llm = AutoModelForCausalLM.from_pretrained(
             self.llm_name, torch_dtype=torch.bfloat16, trust_remote_code=True
@@ -236,10 +267,39 @@ class Experiment(pydantic.BaseModel):
                     target_modules="all-linear",
                 ),
             )
-        llm.print_trainable_parameters()
         tokenizer = AutoTokenizer.from_pretrained(self.llm_name)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+        return llm, tokenizer
+
+    def _load_donor_checkpoint(self, module: NeuroLLMModule) -> None:
+        """Warm-start from a donor checkpoint, resetting LLM-specific weights.
+
+        Keeps encoder (network.*), CTC head and word segmenter; drops llm.* and
+        word_proj_adapter.* so a *different* decoder LLM can be attached.
+        """
+        log.info("Loading donor checkpoint (decoder reset): %s", self.init_ckpt)
+        raw = torch.load(self.init_ckpt, map_location="cpu", weights_only=False)
+        sd = raw.get("state_dict", raw)
+        drop_prefixes = ("llm.", "word_proj_adapter.")
+        kept = {k: v for k, v in sd.items() if not k.startswith(drop_prefixes)}
+        missing, unexpected = module.load_state_dict(kept, strict=False)
+        missing = [k for k in missing if not k.startswith(drop_prefixes)]
+        if missing or unexpected:
+            log.warning(
+                "donor load: missing=%s unexpected=%s", missing, unexpected
+            )
+
+    def _build_module(self, loaders: dict) -> NeuroLLMModule:
+        word_embed_lookup = prepare_word_embeddings(self.data, self.word_extractor_config)
+        n_in_channels = loaders["train"].dataset[0].data["neuros"].shape[1]
+        network = self.brain_model_config.build(
+            n_in_channels=n_in_channels, n_outputs=self.num_classes
+        )
+        word_pool_dim = getattr(self.brain_model_config, "dim", 1024)
+
+        llm, tokenizer = self._build_llm()
+        llm.print_trainable_parameters()
 
         llm_hidden = llm.get_base_model().config.hidden_size
         adapter: nn.Module = (
@@ -297,6 +357,15 @@ class Experiment(pydantic.BaseModel):
             for pname, p in list(getattr(mod, "_parameters", {}).items()):
                 if isinstance(p, torch.nn.UninitializedParameter):
                     mod._parameters[pname] = nn.Parameter(torch.empty(1))
+        # Donor warm-start AFTER lazy params exist, so merger weights land in
+        # materialised tensors.
+        if self.init_ckpt:
+            self._load_donor_checkpoint(module)
+        if self.freeze_encoder:
+            for p in module.network.parameters():
+                p.requires_grad_(False)
+            n_frozen = sum(p.numel() for p in module.network.parameters())
+            log.info("Encoder frozen (%d params)", n_frozen)
         return module
 
     def _trainer_setup(self) -> pl.Trainer:
@@ -412,6 +481,18 @@ def main(argv: list[str] | None = None) -> None:
         p_t.add_argument("--subjects", nargs="+", default=None, help="subjects")
         p_t.add_argument("--tag", default=None, help="output directory suffix tag")
         p_t.add_argument("--devices", type=int, default=None, help="GPU count")
+        # -- decoder-swap / warm-start -------------------------------------
+        p_t.add_argument("--init-ckpt", default=None,
+                         help="donor checkpoint; llm.* + adapter weights are reset")
+        p_t.add_argument("--freeze-encoder", action="store_true",
+                         help="freeze encoder + CTC head (decoder-swap mode)")
+        p_t.add_argument("--encoder-lr", type=float, default=None,
+                         help="separate (typically low) LR for the encoder")
+        p_t.add_argument("--use-unsloth", action="store_true",
+                         help="LoRA via Unsloth FastLanguageModel (falls back to PEFT)")
+        p_t.add_argument("--max-epochs", type=int, default=None)
+        p_t.add_argument("--contrastive-start", type=int, default=None)
+        p_t.add_argument("--llm-start", type=int, default=None)
         add_wandb_args(p_t)
 
     # -- eval ----------------------------------------------------------------
@@ -465,6 +546,21 @@ def main(argv: list[str] | None = None) -> None:
         cfg["seed"] = args.seed
     if getattr(args, "devices", None) is not None:
         cfg["devices"] = args.devices
+    # decoder-swap / warm-start options
+    if getattr(args, "init_ckpt", None):
+        cfg["init_ckpt"] = args.init_ckpt
+    if getattr(args, "freeze_encoder", False):
+        cfg["freeze_encoder"] = True
+    if getattr(args, "encoder_lr", None) is not None:
+        cfg["encoder_lr"] = args.encoder_lr
+    if getattr(args, "use_unsloth", False):
+        cfg["use_unsloth"] = True
+    if getattr(args, "max_epochs", None) is not None:
+        cfg["max_epochs"] = args.max_epochs
+    if getattr(args, "contrastive_start", None) is not None:
+        cfg["contrastive_start_epoch"] = args.contrastive_start
+    if getattr(args, "llm_start", None) is not None:
+        cfg["llm_start_epoch"] = args.llm_start
 
     wandb = wandb_config(args, args.command, cfg.get("seed", 0))
     if wandb is not None:
