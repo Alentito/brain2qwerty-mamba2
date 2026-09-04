@@ -21,7 +21,8 @@
 #          slurm/17_v3_decoder_swap_qwen.sbatch
 # Optional overrides (same --export=ALL,... list):
 #   SUBJECTS="S15 S16 S6"   (MUST match the donor's training subjects)
-#   ENCODER_LR=1e-5  LLM_START=60  MAX_EPOCHS=110  USE_UNSLOTH=1
+#   ENCODER_LR=1e-5  LLM_START=60  MAX_EPOCHS=110  LR=1.5e-4
+#   TAG=decoder-swap-qwen  USE_UNSLOTH=1
 # ============================================================================ #
 
 set -euo pipefail
@@ -34,6 +35,8 @@ SUBJECTS="${SUBJECTS:-S15 S16 S6}"
 ENCODER_LR="${ENCODER_LR:-1e-5}"
 LLM_START="${LLM_START:-60}"
 MAX_EPOCHS="${MAX_EPOCHS:-110}"
+LR="${LR:-1.5e-4}"                   # base/LoRA LR; LoRA often wants 2-4e-4
+TAG="${TAG:-decoder-swap-qwen}"      # change per arm so results dirs don't collide
 USE_UNSLOTH="${USE_UNSLOTH:-0}"
 
 if [ -z "$DONOR_CKPT" ] || [ ! -f "$DONOR_CKPT" ]; then
@@ -89,12 +92,12 @@ python -m brain2qwerty_v3.main run \
     --subjects $SUBJECTS \
     --init-ckpt "$DONOR_CKPT" \
     --encoder-lr "$ENCODER_LR" \
-    --lr 1.5e-4 \
+    --lr "$LR" \
     --wd 1e-3 \
     --contrastive-start 0 \
     --llm-start "$LLM_START" \
     --max-epochs "$MAX_EPOCHS" \
-    --tag decoder-swap-qwen \
+    --tag "$TAG" \
     --devices 1 \
     $EXTRA_ARGS
 
