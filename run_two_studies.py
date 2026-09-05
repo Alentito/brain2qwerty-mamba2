@@ -45,7 +45,8 @@ Environment
 Requires the same env vars as the training CLI:
     BRAIN2QWERTY_STUDIES  path to the extracted study (e.g. SpanishBCBL_3subj)
     BRAIN2QWERTY_CACHE    feature/exca cache dir (default ~/.cache/brain2qwerty)
-Results land in $BRAIN2QWERTY_CACHE/results/small-<core>-<subjects>-<tag>/.
+Results land in $BRAIN2QWERTY_CACHE/results/small-[gnn-]<core>-<subjects>-<tag>/
+(the `gnn-` infix appears only for --encoders gnn arms).
 """
 
 from __future__ import annotations
@@ -81,9 +82,11 @@ def results_root() -> Path:
     return Path(cache) / "results"
 
 
-def output_dir(core: str, subjects: list[str], tag: str, small: bool = True) -> Path:
+def output_dir(core: str, subjects: list[str], tag: str, small: bool = True,
+               encoder: str = "conv") -> Path:
     """Mirror of xp_config.experiment_config output_dir + CLI --tag suffix."""
-    base = f"{'small-' if small else ''}{core}-" + "-".join(subjects)
+    base = (f"{'small-' if small else ''}{'gnn-' if encoder == 'gnn' else ''}{core}-"
+            + "-".join(subjects))
     return results_root() / f"{base}-{tag}"
 
 
@@ -97,41 +100,46 @@ class Run:
     subjects: list[str]
     tag: str
     label: str                 # human-readable arm name
+    encoder: str = "conv"      # "conv" | "gnn" (Stage-1 window encoder)
     ckpt: Path | None = None   # eval only: checkpoint to load
     out: Path = field(init=False)
 
     def __post_init__(self) -> None:
-        self.out = output_dir(self.core, self.subjects, self.tag)
+        self.out = output_dir(self.core, self.subjects, self.tag,
+                              encoder=self.encoder)
 
     @property
     def done(self) -> bool:
         return (self.out / SENTINEL).exists()
 
 
-def build_plan(cores: list[str], studies: list[str],
+def build_plan(encoders: list[str], cores: list[str], studies: list[str],
                study1_subjects: list[str]) -> list[Run]:
     plan: list[Run] = []
     subj_slug = "-".join(s.lower() for s in study1_subjects)
-    for core in cores:
-        if "study1" in studies:
-            plan.append(Run(
-                study="study1", kind="train", core=core,
-                subjects=study1_subjects, tag="study1",
-                label=f"study1_{subj_slug}_{core}",
-            ))
-        if "study2" in studies:
-            train = Run(
-                study="study2", kind="train", core=core,
-                subjects=STUDY2_TRAIN_SUBJECTS, tag="study2",
-                label=f"study2_trainS15S16_{core}",
-            )
-            plan.append(train)
-            plan.append(Run(
-                study="study2", kind="eval", core=core,
-                subjects=STUDY2_EVAL_SUBJECTS, tag="study2-evalS6",
-                label=f"study2_evalS6_{core}",
-                ckpt=train.out / "best.ckpt",
-            ))
+    for encoder in encoders:
+        # conv arms keep the historical label/dir naming exactly
+        core_slug = lambda c: f"gnn-{c}" if encoder == "gnn" else c  # noqa: E731
+        for core in cores:
+            if "study1" in studies:
+                plan.append(Run(
+                    study="study1", kind="train", core=core, encoder=encoder,
+                    subjects=study1_subjects, tag="study1",
+                    label=f"study1_{subj_slug}_{core_slug(core)}",
+                ))
+            if "study2" in studies:
+                train = Run(
+                    study="study2", kind="train", core=core, encoder=encoder,
+                    subjects=STUDY2_TRAIN_SUBJECTS, tag="study2",
+                    label=f"study2_trainS15S16_{core_slug(core)}",
+                )
+                plan.append(train)
+                plan.append(Run(
+                    study="study2", kind="eval", core=core, encoder=encoder,
+                    subjects=STUDY2_EVAL_SUBJECTS, tag="study2-evalS6",
+                    label=f"study2_evalS6_{core_slug(core)}",
+                    ckpt=train.out / "best.ckpt",
+                ))
     return plan
 
 
@@ -141,7 +149,8 @@ def build_command(run: Run, python: str, preset: str, seed: int | None,
     if run.kind == "train":
         # "colab" preset implies --small (T4-class single GPU); else plain train.
         cmd.append("colab" if preset == "colab" else "train")
-        cmd += ["--subjects", *run.subjects, "--core", run.core]
+        cmd += ["--subjects", *run.subjects, "--core", run.core,
+                "--encoder", run.encoder]
         if preset != "colab":
             cmd.append("--small")
         if seed is not None:
@@ -158,7 +167,7 @@ def build_command(run: Run, python: str, preset: str, seed: int | None,
             )
         cmd.append("eval")
         cmd += ["--subjects", *run.subjects, "--core", run.core,
-                "--small", "--ckpt", str(run.ckpt)]
+                "--encoder", run.encoder, "--small", "--ckpt", str(run.ckpt)]
     cmd += ["--tag", run.tag]
     return cmd
 
@@ -255,6 +264,10 @@ def _score_predictions(run: Run, python: str) -> dict | None:
         OUT_DIR / f"{run.label}_sentences.csv", index=False)
 
     per_subject = df.groupby("Subject")[["CER", "WER"]].mean()
+    # sentence accuracy: fraction of sentences decoded with zero CER
+    # (exact whole-sentence match), averaged per subject like CER/WER
+    sent_acc = df.assign(exact=(df["CER"] == 0).astype(float)).groupby(
+        "Subject")["exact"].mean()
     n_subj = len(per_subject)
     sem = per_subject["CER"].std(ddof=1) / (n_subj ** 0.5) if n_subj > 1 else 0.0
     return {
@@ -262,6 +275,7 @@ def _score_predictions(run: Run, python: str) -> dict | None:
         "CER_overall": float(per_subject["CER"].mean()),
         "CER_SEM": float(sem),
         "WER_overall": float(per_subject["WER"].mean()),
+        "sentence_accuracy": float(sent_acc.mean()),
         "per_subject_CER": {s: float(r["CER"]) for s, r in per_subject.iterrows()},
     }
 
@@ -277,7 +291,8 @@ def collect(runs: list[Run], python: str) -> None:
         scores = _score_predictions(run, python)
         test_cer = _last_test_cer(run)
         row = {
-            "study": run.study, "arm": run.label, "core": run.core,
+            "study": run.study, "arm": run.label, "encoder": run.encoder,
+            "core": run.core,
             "subjects_in_split": "-".join(run.subjects), "kind": run.kind,
             "test_CER_metrics_csv": test_cer,
             "output_dir": str(run.out),
@@ -293,9 +308,9 @@ def collect(runs: list[Run], python: str) -> None:
 
     OUT_DIR.mkdir(exist_ok=True)
     summary_csv = OUT_DIR / "two_studies_summary.csv"
-    cols = ["study", "arm", "core", "subjects_in_split", "kind",
+    cols = ["study", "arm", "encoder", "core", "subjects_in_split", "kind",
             "n_sentences", "CER_overall", "CER_SEM", "WER_overall",
-            "test_CER_metrics_csv", "output_dir"]
+            "sentence_accuracy", "test_CER_metrics_csv", "output_dir"]
     with open(summary_csv, "w", newline="") as fh:
         writer = _csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         writer.writeheader()
@@ -303,14 +318,16 @@ def collect(runs: list[Run], python: str) -> None:
     (OUT_DIR / "two_studies_summary.json").write_text(json.dumps(details, indent=2))
 
     lines = ["# Two-Study Results — SpanishBCBL 3-Subject Cache\n",
-             "| Study | Arm | Core | Split subjects | CER (overall) | ± SEM | WER |",
-             "|---|---|---|---|---|---|---|"]
+             "| Study | Arm | Encoder | Core | Split subjects | CER (overall) | ± SEM | WER | Sentence acc |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         cer = f"{r['CER_overall']:.1%}" if r.get("CER_overall") is not None else "—"
         sem = f"{r['CER_SEM']:.1%}" if r.get("CER_SEM") is not None else "—"
         wer = f"{r['WER_overall']:.1%}" if r.get("WER_overall") is not None else "—"
-        lines.append(f"| {r['study']} | {r['arm']} | {r['core']} | "
-                     f"{r['subjects_in_split']} | {cer} | {sem} | {wer} |")
+        sacc = (f"{r['sentence_accuracy']:.1%}"
+                if r.get("sentence_accuracy") is not None else "—")
+        lines.append(f"| {r['study']} | {r['arm']} | {r['encoder']} | {r['core']} | "
+                     f"{r['subjects_in_split']} | {cer} | {sem} | {wer} | {sacc} |")
     lines.append("\nStudy 2 arms with `kind=eval` are the zero-shot held-out-S6 "
                  "transfer evaluations (model trained on S15+S16 only).\n")
     (OUT_DIR / "two_studies_summary.md").write_text("\n".join(lines))
@@ -334,9 +351,14 @@ def main() -> None:
                              "hybrid", "hybrid3", "hybrid_8l", "hybrid3_8l"],
                     help="sentence cores to compare — every Stage-2 variant the "
                          "brain2qwerty_v1_mamba CLI implements (default: "
-                         "transformer mamba). GNN / Conformer / "
-                         "foundation-model encoders from the guide's ablation "
-                         "table are NOT implemented in the codebase yet.")
+                         "transformer mamba). Conformer / foundation-model "
+                         "encoders from the guide's ablation table are NOT "
+                         "implemented in the codebase yet.")
+    ap.add_argument("--encoders", nargs="+", default=["conv"],
+                    choices=["conv", "gnn"],
+                    help="Stage-1 window encoders to compare (default: conv). "
+                         "The run plan is the cartesian product encoder x core; "
+                         "gnn arms get a gnn- label/output-dir prefix.")
     ap.add_argument("--study1-subjects", nargs="+", default=STUDY1_SUBJECTS,
                     help="subject(s) for the Study-1 benchmark (default: S15, "
                          "the guide's recommended single-subject benchmark; "
@@ -357,7 +379,7 @@ def main() -> None:
     args = ap.parse_args()
 
     studies = ["study1", "study2"] if args.study == "all" else [f"study{args.study}"]
-    plan = build_plan(args.cores, studies, args.study1_subjects)
+    plan = build_plan(args.encoders, args.cores, studies, args.study1_subjects)
 
     venv_py = REPO / ".venv" / "bin" / "python"
     python = args.python or (str(venv_py) if venv_py.exists() else sys.executable)
