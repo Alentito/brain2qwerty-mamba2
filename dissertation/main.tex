@@ -15,6 +15,8 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
 \usepackage{hyperref}
 \usepackage{microtype}
 
@@ -457,6 +459,48 @@ Inference uses 16-beam search with length penalty 0.2. The character-level
 benchmark additionally rescores greedy CTC output with a Spanish 4-gram
 KenLM model \citep{heafield2011kenlm} ($\alpha_{\mathrm{lm}}=0.5$,
 $\beta_{\mathrm{word}}=1.0$).
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=9mm,
+              inner sep=4pt},
+  stage1/.style={box, fill=blue!12},
+  stage2/.style={box, fill=green!14},
+  stage3/.style={box, fill=orange!16},
+  neutral/.style={box, fill=gray!10},
+  arr/.style={-{Stealth[length=2.5mm]}, thick},
+  lbl/.style={font=\scriptsize\itshape, midway, above=1pt}
+]
+\node[neutral] (meg) {continuous MEG\\3--13\,s, 306 ch};
+\node[neutral, right=5mm of meg] (enc) {conv encoder\\+ 2D-Fourier\\channel merger};
+\node[neutral, right=5mm of enc] (core) {sentence core\\(Mamba-2 / Mamba-3\\/ Conformer)};
+\node[stage1, right=5mm of core] (ctc) {CTC head\\char posteriors};
+\node[stage2, right=5mm of ctc] (seg) {space segmentation\\frames between\\spaces = words};
+\node[stage2, right=5mm of seg] (pool) {intra-word pooler\\word embeddings};
+\node[stage2, below=7mm of pool] (dtw) {hard DTW + SigLIP\\contrastive alignment};
+\node[stage3, left=5mm of dtw] (llm) {TinyLlama-1.1B + LoRA\\rescoring (16-beam)};
+\node[neutral, left=5mm of llm] (out) {decoded\\Spanish text};
+
+\draw[arr] (meg) -- (enc);
+\draw[arr] (enc) -- (core);
+\draw[arr] (core) -- (ctc);
+\draw[arr] (ctc) -- node[lbl]{argmax spaces} (seg);
+\draw[arr] (seg) -- (pool);
+\draw[arr] (pool) -- (dtw);
+\draw[arr] (pool.west) .. controls +(0,-1.2) and +(0,1.2) .. (llm.north);
+\draw[arr] (llm) -- (out);
+\end{tikzpicture}
+\caption{Study-3 word-segmentation pipeline. The continuous MEG stream is
+encoded and decoded into per-frame character posteriors; frames between
+predicted \emph{space} symbols are grouped into pseudo-word segments and
+pooled into word embeddings (\texttt{CTCSpaceSegmenter}). Colour marks the
+curriculum stage that trains each component: blue = Stage 1 (CTC),
+green = Stage 2 (contrastive word alignment), orange = Stage 3 (LLM
+rescoring). Schematic of the implemented pipeline, not experimental data.}
+\label{fig:pipeline}
+\end{figure}
 
 \section{Classical baselines}
 To anchor the deep results, LDA and ridge regression were fit to flattened
@@ -996,6 +1040,16 @@ regeneration via the hooks described in
 \caption{Hard-DTW word-alignment cost matrix (pending cluster
 regeneration).}
 \label{fig:dtw}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\figorplaceholder{fig_word_segmentation.pdf}{0.85}{}
+\caption{Word segmentation in action on one held-out sentence: CTC space
+probability trace with predicted word boundaries versus the true word
+sequence (pending cluster regeneration via
+\texttt{dissertation/analysis/cluster/fig\_word\_segmentation.py}).}
+\label{fig:wordseg}
 \end{figure}
 
 % ============================================================================
