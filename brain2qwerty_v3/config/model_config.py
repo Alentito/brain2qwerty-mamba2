@@ -6,6 +6,8 @@
 
 """Brain2Qwerty V3 Model Configs for Word-Level Decoding on SpanishBCBL."""
 
+import copy
+
 _ENCODER = {
     "name": "SimpleConv",
     "dropout_input": 0.2,
@@ -32,14 +34,28 @@ _ENCODER = {
 }
 
 
-def build_encoder_config(core: str = "mamba3_hybrid_stabilized", small: bool = False) -> dict:
-    """Build the Conv + Sequence Core encoder config.
+def build_encoder_config(
+    core: str = "mamba3_hybrid_stabilized",
+    small: bool = False,
+    frontend: str = "conv",
+) -> dict:
+    """Build the Frontend + Sequence Core encoder config.
 
-    Options:
+    Cores:
     * ``"conformer"``: Original Brain2Qwerty V2 baseline (Conformer CTC core).
     * ``"mamba_mlp"``: Round 3 Best Mamba Champion (BiMamba-2 + Gated Fusion + FFN MLP).
     * ``"mamba3_hybrid_stabilized"``: Deep Research Upgrade (BCNorm + RoPE + Adaptive Delta-t Clamping + Attention Hybrid).
     * ``"hybrid"``: Standard Mamba-2 Nemotron-H hybrid stack.
+    * ``"deltanet"``: Bidirectional DeltaNet (delta-rule linear attention), 8 layers
+      like the other V3 cores (Study 4 port from brain2qwerty_v1_mamba).
+
+    Frontends:
+    * ``"conv"``: SimpleConv + per-subject 2D-Fourier merger (default; the
+      ``small`` width adjustments — ``hidden`` 750, merger ``total_dim`` 512 —
+      apply only here).
+    * ``"gnn"``: GnnContinuousEncoder — length-preserving per-frame k-NN graph
+      attention over the sensor layout (Study 4). Widths follow ``dim``:
+      ``d_node`` 128 (small) / 256 (full).
     """
     dim = 512 if small else 1024
     d_state = 64 if small else 128
@@ -103,14 +119,39 @@ def build_encoder_config(core: str = "mamba3_hybrid_stabilized", small: bool = F
             "rotary_pos_emb": True,
             "dropout": 0.1,
         }
+    elif core == "deltanet":
+        # Study 4 port: bidirectional DeltaNet (delta-rule linear attention).
+        # 8 layers to match the depth of the other V3 cores; expand=1 /
+        # headdim=64 as in the v1_mamba ablation.
+        transformer_cfg = {
+            "name": "BiDeltaNetCTCCore",
+            "n_layer": 8,
+            "headdim": 64,
+            "expand": 1,
+            "dropout": 0.1,
+        }
     else:
         raise ValueError(f"Unknown core: {core!r}")
 
-    enc_cfg = {**_ENCODER}
-    if small:
-        enc_cfg["hidden"] = 750
-        enc_cfg["initial_linear"] = 256
-        enc_cfg["merger_config"]["fourier_emb_config"]["total_dim"] = 512
+    if frontend == "conv":
+        enc_cfg = copy.deepcopy(_ENCODER)
+        if small:
+            enc_cfg["hidden"] = 750
+            enc_cfg["initial_linear"] = 256
+            enc_cfg["merger_config"]["fourier_emb_config"]["total_dim"] = 512
+    elif frontend == "gnn":
+        enc_cfg = {
+            "name": "GnnContinuousEncoder",
+            "d_node": 128 if small else 256,
+            "n_layers": 3,
+            "heads": 4,
+            "k_neighbors": 8,
+            "conv_mult": 8,
+            "dropout": 0.1,
+            "t_chunk": 128,
+        }
+    else:
+        raise ValueError(f"Unknown frontend: {frontend!r}")
 
     return {
         "name": "ConvMambaHybrid",

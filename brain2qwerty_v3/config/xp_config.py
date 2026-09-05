@@ -54,6 +54,7 @@ WORD_EXTRACTOR = {"model_name": LLM, "layers": 0, "contextualized": False}
 
 def experiment_config(
     core: str = "mamba3_hybrid_stabilized",
+    frontend: str = "conv",
     small: bool = False,
     subjects: list[str] | None = None,
     lr: float | None = None,
@@ -69,13 +70,22 @@ def experiment_config(
     * ``core="conformer"``: Version 1 (V2 Conformer baseline on SpanishBCBL)
     * ``core="mamba_mlp"``: Version 2 (Round 3 Champion BiMamba-2 + Gated MLP on SpanishBCBL)
     * ``core="mamba3_hybrid_stabilized"``: Version 3 (Deep Research Stabilized Mamba-3 Hybrid on SpanishBCBL)
+    * ``core="deltanet"``: Study 4 (bidirectional DeltaNet core ported from v1_mamba)
+    * ``frontend="conv"``: SimpleConv + per-subject Fourier merger (default)
+    * ``frontend="gnn"``: GnnContinuousEncoder — per-frame k-NN graph attention
+      over the sensor layout (Study 4 Stage-1 ablation)
     """
     study_query = None
     if subjects:
         formatted = [_normalise_subject(s) for s in subjects]
         study_query = f"subject in {formatted!r}"
 
-    base_lr = lr if lr is not None else (3e-4 if "mamba" in core else 8e-4)
+    # Linear-recurrence cores (mamba*, deltanet) train best at the lower
+    # 3e-4 base LR established for the mamba studies; attention-style cores
+    # (conformer) keep V2's 8e-4.
+    base_lr = lr if lr is not None else (
+        3e-4 if ("mamba" in core or core == "deltanet") else 8e-4
+    )
     base_wd = wd if wd is not None else 1e-3
     out = output_dir or RESULTS
 
@@ -135,7 +145,7 @@ def experiment_config(
             # robustness / cross-session invariance.
             "channel_dropout": 0.1,
         },
-        "brain_model_config": build_encoder_config(core=core, small=small),
+        "brain_model_config": build_encoder_config(core=core, small=small, frontend=frontend),
         # Staged 3-loss schedule: CTC from 0, +contrastive at 150, +LLM at 225
         "alpha": 0.1,
         "beta": 0.01,
@@ -165,9 +175,11 @@ def experiment_config(
     }
 
 
-def debug_config(core: str = "mamba3_hybrid_stabilized") -> dict:
+def debug_config(core: str = "mamba3_hybrid_stabilized", frontend: str = "conv") -> dict:
     """Smoke-test config: fast sanity check with 3 subjects."""
-    cfg = experiment_config(core=core, small=True, subjects=["S15", "S16", "S6"])
+    cfg = experiment_config(
+        core=core, frontend=frontend, small=True, subjects=["S15", "S16", "S6"]
+    )
     cfg["data"]["batch_size"] = 2
     cfg["data"]["val_batch_size"] = 2
     cfg["data"]["test_batch_size"] = 2

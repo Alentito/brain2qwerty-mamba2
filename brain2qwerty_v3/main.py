@@ -26,6 +26,8 @@ from neuraltrain.models.base import BaseModelConfig
 from neuraltrain.utils import WandbLoggerConfig
 
 from . import models as _models  # noqa: F401  (registers ConvConformer + ConvMambaHybrid)
+from . import gnn_frontend as _gnn_frontend  # noqa: F401  (registers GnnContinuousEncoder)
+from . import deltanet as _deltanet  # noqa: F401  (registers BiDeltaNetCTCCore)
 from . import transforms as _transforms  # noqa: F401  (registers EventsTransforms)
 from .callbacks import PredictionCSVCallback, TrainingTimeProfilingCallback
 from .config.xp_config import LLM, RESULTS, WORD_EXTRACTOR
@@ -447,10 +449,20 @@ class Experiment(pydantic.BaseModel):
             )
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Run the V3 experiment with a selectable sequence core.
+def tagged_output_dir(core: str, frontend: str, tag: str) -> str:
+    """Output dir for a tagged run: ``v3-[gnn-]<core>-<tag>`` under RESULTS.
 
-    ``python -m brain2qwerty_v3.main {debug,train,eval,cache} [--core ...]``
+    The conv-frontend naming is exactly the historical ``v3-<core>-<tag>``;
+    gnn arms get the ``gnn-`` infix so Study-4 encoder arms never collide.
+    """
+    slug = f"v3-{'gnn-' if frontend == 'gnn' else ''}{core}-{tag}"
+    return str(Path(RESULTS) / slug)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run the V3 experiment with a selectable sequence core and frontend.
+
+    ``python -m brain2qwerty_v3.main {debug,train,eval,cache} [--core ...] [--frontend ...]``
     """
     import argparse
 
@@ -459,7 +471,8 @@ def main(argv: list[str] | None = None) -> None:
     from .cli import add_wandb_args, wandb_config
     from .config.xp_config import debug_config, experiment_config
 
-    CORE_CHOICES = ["conformer", "mamba_mlp", "mamba3_hybrid_stabilized", "hybrid"]
+    CORE_CHOICES = ["conformer", "mamba_mlp", "mamba3_hybrid_stabilized", "hybrid", "deltanet"]
+    FRONTEND_CHOICES = ["conv", "gnn"]
 
     parser = argparse.ArgumentParser(prog="brain2qwerty_v3")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -467,11 +480,13 @@ def main(argv: list[str] | None = None) -> None:
     # -- debug ---------------------------------------------------------------
     p_debug = sub.add_parser("debug", help="1-timeline smoke test")
     p_debug.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
+    p_debug.add_argument("--frontend", choices=FRONTEND_CHOICES, default="conv")
 
     # -- train / run ---------------------------------------------------------
     for cmd in ("train", "run"):
         p_t = sub.add_parser(cmd, help="full training")
         p_t.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
+        p_t.add_argument("--frontend", choices=FRONTEND_CHOICES, default="conv")
         p_t.add_argument("--resume", default=None, help="checkpoint to resume from")
         p_t.add_argument("--seed", type=int, default=None, help="override the seed")
         p_t.add_argument("--lr", type=float, default=None, help="override learning rate")
@@ -500,28 +515,31 @@ def main(argv: list[str] | None = None) -> None:
     # -- eval ----------------------------------------------------------------
     p_eval = sub.add_parser("eval", help="evaluate a checkpoint on the test split")
     p_eval.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
+    p_eval.add_argument("--frontend", choices=FRONTEND_CHOICES, default="conv")
     p_eval.add_argument("--ckpt", required=True, help="checkpoint to evaluate")
     add_wandb_args(p_eval)
 
     # -- cache ---------------------------------------------------------------
     p_cache = sub.add_parser("cache", help="pre-warm the feature cache")
     p_cache.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
+    p_cache.add_argument("--frontend", choices=FRONTEND_CHOICES, default="conv")
     p_cache.add_argument("--debug", action="store_true", help="only the debug subset")
 
     add_wandb_args(p_debug)
     args = parser.parse_args(argv)
 
     core = getattr(args, "core", "mamba3_hybrid_stabilized")
+    frontend = getattr(args, "frontend", "conv")
 
     if args.command == "cache":
-        cfg = debug_config(core=core) if args.debug else experiment_config(core=core)
+        cfg = debug_config(core=core, frontend=frontend) if args.debug else experiment_config(core=core, frontend=frontend)
         print("[brain2qwerty_v3] pre-warming the feature cache...")
         Experiment(**cfg).data.build()
         print("[brain2qwerty_v3] cache warmed.")
         return
 
     if args.command == "debug":
-        cfg = debug_config(core=core)
+        cfg = debug_config(core=core, frontend=frontend)
     else:
         extra_kw: dict = {}
         if getattr(args, "subjects", None):
@@ -536,8 +554,8 @@ def main(argv: list[str] | None = None) -> None:
             extra_kw["accumulate_grad_batches"] = args.accumulate_grad_batches
         tag = getattr(args, "tag", None)
         if tag:
-            extra_kw["output_dir"] = str(Path(RESULTS) / f"v3-{core}-{tag}")
-        cfg = experiment_config(core=core, **extra_kw)
+            extra_kw["output_dir"] = tagged_output_dir(core, frontend, tag)
+        cfg = experiment_config(core=core, frontend=frontend, **extra_kw)
 
     if args.command == "eval":
         cfg["eval_only"] = True
@@ -570,7 +588,7 @@ def main(argv: list[str] | None = None) -> None:
     if wandb is not None:
         cfg["wandb_config"] = wandb
 
-    print(f"[brain2qwerty_v3] running in '{args.command}' mode (core={core}, seed={cfg.get('seed')})")
+    print(f"[brain2qwerty_v3] running in '{args.command}' mode (core={core}, frontend={frontend}, seed={cfg.get('seed')})")
     Experiment(**cfg).run()
 
 

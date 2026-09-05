@@ -8,6 +8,8 @@ import torch
 import torch.nn as nn
 
 from neuraltrain.models.conformer import Conformer
+from neuraltrain.models.simpleconv import SimpleConv
+from neuraltrain.models.simplerconv import SimplerConv
 from neuraltrain.models.transformer import TransformerEncoder
 
 # Aliased from V2 rather than redefined: exca's discriminated-model registry is
@@ -15,11 +17,18 @@ from neuraltrain.models.transformer import TransformerEncoder
 # V2's whenever both packages are imported in one process.
 from brain2qwerty_v2.models import ConvConformer, ConvConformerModel  # noqa: E402
 
+from .deltanet import BiDeltaNetCTCCore
+from .gnn_frontend import GnnContinuousEncoder
 from .mamba import BiMambaGatedMLP, Mamba3StabilizedHybrid, MambaHybrid
 
 
 class ConvMambaHybrid(ConvConformer):
-    """V3 encoder config: conv front-end + hybrid Mamba / Conformer / Gated MLP sequence core."""
+    """V3 encoder config: conv/GNN front-end + hybrid Mamba / Conformer / Gated MLP / DeltaNet sequence core."""
+
+    # Union is widened (not redefined) so Study-4 configs can swap the Stage-1
+    # frontend (GnnContinuousEncoder) and the Stage-2 core (BiDeltaNetCTCCore)
+    # purely at the config-dict level.
+    encoder_config: SimplerConv | SimpleConv | GnnContinuousEncoder
 
     transformer_config: (
         TransformerEncoder
@@ -27,6 +36,7 @@ class ConvMambaHybrid(ConvConformer):
         | MambaHybrid
         | Mamba3StabilizedHybrid
         | BiMambaGatedMLP
+        | BiDeltaNetCTCCore
         | None
     ) = None
 
