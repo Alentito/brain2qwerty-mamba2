@@ -19,7 +19,7 @@ from pathlib import Path
 
 from brain2qwerty_v1.utils import BUTTON_MAPPING, NUM_CLASSES
 
-from .model_config import encoder, sentence_core
+from .model_config import encoder, gnn_encoder, sentence_core
 
 STUDY_PATH = os.environ.get(
     "BRAIN2QWERTY_STUDIES", str(Path.home() / "brain2qwerty_data" / "studies")
@@ -34,6 +34,7 @@ def experiment_config(
     subjects: list | None = None,
     core: str = "mamba",
     small: bool = False,
+    encoder_kind: str = "conv",
     timeline_query: str | None = None,
 ) -> dict:
     """V1 keystroke-decoding config with a switchable sentence core.
@@ -48,13 +49,25 @@ def experiment_config(
         reference). Both share every other setting — the ablation is clean.
     small :
         Model width 512 instead of the paper's 2048 (Kaggle/Colab preset).
+    encoder_kind :
+        Stage-1 window encoder: ``"conv"`` (V1's SimpleConvTimeAgg) or
+        ``"gnn"`` (graph neural network over the sensor layout).
     timeline_query :
         Optional neuralset study query (e.g. ``"subject in ['S15','S16','S6']"``)
         to skip loading other recordings entirely — recommended when warming
         the cache, as it cuts feature extraction to the selected subjects.
     """
     subjects = list(subjects or DEFAULT_SUBJECTS)
-    tag = f"{'small-' if small else ''}{core}-" + "-".join(str(s) for s in subjects)
+    if encoder_kind == "conv":
+        encoder_cfg = encoder(small=small)
+    elif encoder_kind == "gnn":
+        encoder_cfg = gnn_encoder(small=small)
+    else:
+        raise ValueError(f"unknown encoder_kind {encoder_kind!r}; valid: conv, gnn")
+    tag = (
+        f"{'small-' if small else ''}{'gnn-' if encoder_kind == 'gnn' else ''}{core}-"
+        + "-".join(str(s) for s in subjects)
+    )
 
     study = {
         "name": "Pinet2024Meg",
@@ -109,7 +122,7 @@ def experiment_config(
             "pin_memory": True,
             "persistent_workers": True,
         },
-        "brain_model_config": encoder(small=small),
+        "brain_model_config": encoder_cfg,
         "transformer_config": sentence_core(core=core, small=small),
         "loss": {"name": "CrossEntropyLoss"},
         "optimizer": {
@@ -128,10 +141,12 @@ def colab_config(
     subjects: list | None = None,
     core: str = "mamba",
     small: bool = True,
+    encoder_kind: str = "conv",
 ) -> dict:
     """Single-GPU Kaggle/Colab preset (T4-class): small model, 1 device,
     small batches, 2 workers, shorter schedule."""
-    cfg = experiment_config(subjects=subjects, core=core, small=small)
+    cfg = experiment_config(subjects=subjects, core=core, small=small,
+                            encoder_kind=encoder_kind)
     cfg["devices"] = 1
     cfg["n_epochs"] = 200
     cfg["patience"] = 25
@@ -143,7 +158,8 @@ def colab_config(
     return cfg
 
 
-def debug_config(subjects: list | None = None, core: str = "mamba") -> dict:
+def debug_config(subjects: list | None = None, core: str = "mamba",
+                 encoder_kind: str = "conv") -> dict:
     """Smoke test: one recording of the first subject, 2 epochs, single GPU."""
     from ..transforms import _normalise_subject
 
@@ -152,6 +168,7 @@ def debug_config(subjects: list | None = None, core: str = "mamba") -> dict:
         subjects=subjects,
         core=core,
         small=True,
+        encoder_kind=encoder_kind,
         # the timeline index stores subjects in long form ("Pinet2024Meg/S15")
         timeline_query=f"subject == '{_normalise_subject(subjects[0])}'",
     )

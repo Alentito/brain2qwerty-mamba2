@@ -16,8 +16,8 @@ config differs (subject filter + switchable sentence core).
     python -m brain2qwerty_v1_mamba.main colab --core mamba                   # T4 preset
     python -m brain2qwerty_v1_mamba.main eval --ckpt <path> --core mamba [--small]
 
-IMPORTANT: keep --small and --subjects identical between the mamba run and
-the transformer baseline, and pass the same flags to eval as to train.
+IMPORTANT: keep --small, --encoder and --subjects identical between the mamba
+run and the transformer baseline, and pass the same flags to eval as to train.
 """
 
 import argparse
@@ -35,6 +35,7 @@ from brain2qwerty_v1.pl_module import BrainModule
 from brain2qwerty_v1.utils import materialize_lazy_params
 
 from . import deltanet_core as _deltanet_core  # noqa: F401  (registers BiDeltaNetSentenceCore)
+from . import gnn_encoder as _gnn_encoder  # noqa: F401  (registers GnnWindowEncoder)
 from . import mamba_core as _mamba_core  # noqa: F401  (registers BiMambaSentenceCore)
 from . import transforms as _transforms  # noqa: F401  (registers V1MambaSubjectFilter)
 from .config.xp_config import colab_config, debug_config, experiment_config
@@ -93,6 +94,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         "hybrid", "hybrid3", "hybrid_8l", "hybrid3_8l"
     ], default="mamba",
                    help="sentence-level core variant")
+    p.add_argument("--encoder", choices=["conv", "gnn"], default="conv",
+                   help="Stage-1 window encoder: V1's conv encoder or the "
+                        "graph neural network over the sensor layout")
     p.add_argument("--small", action="store_true",
                    help="512-dim model instead of the paper's 2048 (Kaggle preset)")
     p.add_argument("--devices", type=int, default=None,
@@ -142,11 +146,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "cache":
         if args.debug:
-            cfg = debug_config(subjects=args.subjects, core=args.core)
+            cfg = debug_config(subjects=args.subjects, core=args.core,
+                               encoder_kind=args.encoder)
         else:
             cfg = experiment_config(
                 subjects=args.subjects, core=args.core, small=args.small,
-                timeline_query=args.timeline_query,
+                encoder_kind=args.encoder, timeline_query=args.timeline_query,
             )
         print("[v1_mamba] pre-warming the feature cache...")
         Experiment(**cfg).data.build()
@@ -154,11 +159,14 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "debug":
-        cfg = debug_config(subjects=args.subjects, core=args.core)
+        cfg = debug_config(subjects=args.subjects, core=args.core,
+                           encoder_kind=args.encoder)
     elif args.command == "colab":
-        cfg = colab_config(subjects=args.subjects, core=args.core, small=True)
+        cfg = colab_config(subjects=args.subjects, core=args.core, small=True,
+                           encoder_kind=args.encoder)
     else:  # train / eval
-        cfg = experiment_config(subjects=args.subjects, core=args.core, small=args.small)
+        cfg = experiment_config(subjects=args.subjects, core=args.core,
+                                small=args.small, encoder_kind=args.encoder)
 
     if args.command == "eval":
         cfg["eval_only"] = True
@@ -182,6 +190,7 @@ def main(argv: list[str] | None = None) -> None:
 
     print(
         f"[v1_mamba] mode={args.command} core={args.core} "
+        f"encoder={cfg['brain_model_config']['name']} "
         f"small={cfg['brain_model_config']['hidden'] == 512} "
         f"subjects={cfg['data']['transforms'][0]['subjects']} "
         f"out={cfg['output_dir']}"

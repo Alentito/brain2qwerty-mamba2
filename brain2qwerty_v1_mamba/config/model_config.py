@@ -34,6 +34,23 @@ def encoder(small: bool = False) -> dict:
     return cfg
 
 
+def gnn_encoder(small: bool = False) -> dict:
+    """GNN window encoder (Stage-1 ablation): 306 MEG sensors as graph nodes.
+
+    Same contract as ``encoder``: a ``hidden`` field (V1 reads it to size the
+    sentence core) and a name resolvable in the BaseModelConfig registry.
+    """
+    return {
+        "name": "GnnWindowEncoder",
+        "hidden": 512 if small else 2048,
+        "d_node": 128 if small else 256,
+        "n_layers": 3,
+        "heads": 4,
+        "k_neighbors": 8,
+        "dropout": 0.1,
+    }
+
+
 def sentence_core(core: str = "mamba", small: bool = False) -> dict:
     """Sentence-level sequence core: the ablation switch.
 
