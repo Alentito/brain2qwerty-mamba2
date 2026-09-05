@@ -44,6 +44,8 @@ def sentence_core(core: str = "mamba", small: bool = False) -> dict:
     * ``"mamba3"``: BiMamba-3 stack (depth 4, BCNorm + complex-state RoPE)
     * ``"mamba_mlp"``: BiMamba-2 + Gated Non-linear Fusion + FFN MLP sublayer
     * ``"mamba3_mlp"``: BiMamba-3 + Gated Non-linear Fusion + FFN MLP sublayer
+    * ``"deltanet"``: BiDeltaNet stack (depth 4, delta-rule linear attention)
+    * ``"deltanet_mlp"``: BiDeltaNet + Gated Non-linear Fusion + FFN MLP sublayer
     * ``"hybrid"``: Nemotron-H style [M, M, M, A] (depth 4, attention every 4)
     * ``"hybrid3"``: Mamba-3 + Attention [M3, M3, M3, A]
     * ``"hybrid_8l"``: 8-layer Hybrid [M, M, M, A, M, M, M, A]
@@ -83,6 +85,18 @@ def sentence_core(core: str = "mamba", small: bool = False) -> dict:
             **base_mamba,
         }
 
+    if core in ("deltanet", "deltanet_mlp"):
+        mlp = core == "deltanet_mlp"
+        return {
+            "name": "BiDeltaNetSentenceCore",
+            "n_layer": 4,
+            "use_mlp": mlp,
+            "gated_fusion": mlp,
+            "headdim": 64,
+            "expand": 1,
+            "dropout": 0.1,
+        }
+
     if core in ("hybrid", "hybrid3"):
         return {
             "name": "HybridMamba3SentenceCore" if core == "hybrid3" else "HybridSentenceCore",
@@ -105,4 +119,4 @@ def sentence_core(core: str = "mamba", small: bool = False) -> dict:
             **base_mamba,
         }
 
-    raise ValueError(f"unknown core {core!r}; valid: transformer, mamba, mamba3, mamba_mlp, mamba3_mlp, hybrid, hybrid3, hybrid_8l, hybrid3_8l, transformer_deep")
+    raise ValueError(f"unknown core {core!r}; valid: transformer, mamba, mamba3, mamba_mlp, mamba3_mlp, deltanet, deltanet_mlp, hybrid, hybrid3, hybrid_8l, hybrid3_8l, transformer_deep")

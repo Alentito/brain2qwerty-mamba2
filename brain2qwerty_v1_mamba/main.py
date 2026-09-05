@@ -34,6 +34,7 @@ from brain2qwerty_v1.metrics import CER
 from brain2qwerty_v1.pl_module import BrainModule
 from brain2qwerty_v1.utils import materialize_lazy_params
 
+from . import deltanet_core as _deltanet_core  # noqa: F401  (registers BiDeltaNetSentenceCore)
 from . import mamba_core as _mamba_core  # noqa: F401  (registers BiMambaSentenceCore)
 from . import transforms as _transforms  # noqa: F401  (registers V1MambaSubjectFilter)
 from .config.xp_config import colab_config, debug_config, experiment_config
@@ -88,7 +89,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="participants, e.g. S15 S16 S6 (default: S15 S16 S6)")
     p.add_argument("--core", choices=[
         "mamba", "mamba3", "transformer", "transformer_deep",
-        "mamba_mlp", "mamba3_mlp", "hybrid", "hybrid3", "hybrid_8l", "hybrid3_8l"
+        "mamba_mlp", "mamba3_mlp", "deltanet", "deltanet_mlp",
+        "hybrid", "hybrid3", "hybrid_8l", "hybrid3_8l"
     ], default="mamba",
                    help="sentence-level core variant")
     p.add_argument("--small", action="store_true",
