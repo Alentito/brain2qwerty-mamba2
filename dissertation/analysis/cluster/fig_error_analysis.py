@@ -153,6 +153,24 @@ def main():
     fig.savefig(out / "fig_ctc_vs_final.pdf", bbox_inches="tight")
     plt.close(fig)
 
+    # ---------------- WER/CER violin per model ---------------------- #
+    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.9))
+    colors = ["#7f7f7f", "#1f77b4", "#2ca02c"]
+    for ax, met in zip(axes, ["WER", "CER"]):
+        data = [df[met].values for df in dfs.values()]
+        parts = ax.violinplot(data, showmeans=True, showextrema=True)
+        for pc, c in zip(parts["bodies"], colors[: len(dfs)]):
+            pc.set_facecolor(c)
+            pc.set_alpha(0.7)
+        ax.set_xticks(range(1, len(dfs) + 1))
+        ax.set_xticklabels(list(dfs), fontsize=7)
+        ax.set_title(f"per-sentence {met}", fontsize=9)
+        ax.set_ylim(0, 1.3)
+    fig.suptitle("Score distributions across 62 test sentences", fontsize=9, y=1.02)
+    fig.tight_layout()
+    fig.savefig(out / "fig_wer_cer_violin.pdf", bbox_inches="tight")
+    plt.close(fig)
+
     # ---------------- numeric summary ------------------------------- #
     rows = []
     for name, df in dfs.items():

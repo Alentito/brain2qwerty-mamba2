@@ -60,5 +60,10 @@ it only if you want the Δt figure; the text reads fine with the placeholder.
 
 - Verify the `levy2026brain2qwertyv2` bib entry (marked in `references.bib`).
 - Replace placeholder affiliation/date on the title page.
-- After `run_all.sh`, update Table `tab:bootstrap` with the Mamba-3 vs
-  Mamba-2 row from `dissertation/stats/stats_mamba3_vs_mamba2.csv`.
+- Canonical Study-3 runs are the n=62 folders
+  (`v3-conformer-v3-conformer-baseline`, `v3-mamba_mlp-v3-mamba-gated-mlp`,
+  `v3-mamba3_hybrid_stabilized-v3-mamba3-stabilized-hybrid`). The older
+  `statistical_reports/` numbers came from a different extraction and are
+  superseded by `dissertation/stats/*.csv`.
+- Scope: the dissertation ends at Study 3. The Qwen decoder-swap and the
+  19-subject array are deliberately excluded (future work only).

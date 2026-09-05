@@ -171,58 +171,64 @@ fig.tight_layout()
 fig.savefig(FIG / "fig_phase1_benchmark.pdf", bbox_inches="tight")
 plt.close(fig)
 
-# ------------------------------------------- 5. Phase-2 metrics with CIs
-dist = pd.read_csv(ROOT / "statistical_reports/distribution_summary_table.csv")
-models = ["Conformer", "BiMamba-2 + Gated MLP", "Mamba-3 Stabilized Hybrid"]
-metrics = ["WER", "CER", "CTC_CER", "SemER"]
-mcolors = {"Conformer": C_CONF, "BiMamba-2 + Gated MLP": C_MAMBA,
-           "Mamba-3 Stabilized Hybrid": C_MAMBA3}
+# -------------------- 5 + 6. Phase-2 stats figures (canonical cluster stats)
+STATS = ROOT / "dissertation" / "stats"
+f_m2 = STATS / "stats_mamba2_vs_conformer.csv"
+f_m3 = STATS / "stats_mamba3_vs_conformer.csv"
 
-def parse_ci(s):
-    lo, hi = s.strip("[]").split(",")
-    return (float(lo.strip().rstrip("%")), float(hi.strip().rstrip("%")))
+if f_m2.exists() and f_m3.exists():
+    s2 = pd.read_csv(f_m2).set_index("metric")
+    s3 = pd.read_csv(f_m3).set_index("metric")
+    metrics = ["WER", "CER", "CTC_CER", "SemER"]
+    models = ["Conformer", "BiMamba-2 + Gated MLP", "Mamba-3 Stabilized Hybrid"]
+    mcolors = {"Conformer": C_CONF, "BiMamba-2 + Gated MLP": C_MAMBA,
+               "Mamba-3 Stabilized Hybrid": C_MAMBA3}
+    means = {
+        "Conformer": [s2.loc[m, "mean_Conformer"] for m in metrics],
+        "BiMamba-2 + Gated MLP": [s2.loc[m, "mean_BiMamba2"] for m in metrics],
+        "Mamba-3 Stabilized Hybrid": [s3.loc[m, "mean_Mamba3Hybrid"] for m in metrics],
+    }
 
-fig, axes = plt.subplots(1, 4, figsize=(7.4, 2.7))
-for ax, met in zip(axes, metrics):
-    for j, m in enumerate(models):
-        row = dist[(dist.Model == m) & (dist.Metric == met)].iloc[0]
-        mean = float(row["Mean +/- SD"].split(" +/- ")[0])
-        lo, hi = parse_ci(row["Bootstrap 95% CI"])
-        ax.bar(j, mean, yerr=[[mean - lo], [hi - mean]], capsize=3,
-               color=mcolors[m], alpha=0.85, width=0.6)
-        ax.text(j, hi + 0.008, f"{mean:.3f}", ha="center", fontsize=6.5)
-    ax.set_title(met, fontsize=9)
-    ax.set_xticks(range(3))
-    ax.set_xticklabels(["Conf", "M2+MLP", "M3-Hyb"], fontsize=7)
-    ax.set_ylim(bottom=0)
-fig.suptitle("Phase 2 continuous word-level decoding (62 test sentences, bootstrap 95% CI)",
-             fontsize=9, y=1.02)
-fig.tight_layout()
-fig.savefig(FIG / "fig_phase2_metrics.pdf", bbox_inches="tight")
-plt.close(fig)
+    fig, axes = plt.subplots(1, 4, figsize=(7.4, 2.7))
+    for ax, met, i in zip(axes, metrics, range(4)):
+        for j, m in enumerate(models):
+            v = means[m][i]
+            ax.bar(j, v, color=mcolors[m], alpha=0.85, width=0.6)
+            ax.text(j, v + 0.008, f"{v:.3f}", ha="center", fontsize=6.5)
+        ax.set_title(met, fontsize=9)
+        ax.set_xticks(range(3))
+        ax.set_xticklabels(["Conf", "M2+MLP", "M3-Hyb"], fontsize=7)
+        ax.set_ylim(bottom=0)
+    fig.suptitle("Phase 2 continuous word-level decoding (62 test sentences, sentence-mean)",
+                 fontsize=9, y=1.02)
+    fig.tight_layout()
+    fig.savefig(FIG / "fig_phase2_metrics.pdf", bbox_inches="tight")
+    plt.close(fig)
 
-# ------------------------------------------- 6. bootstrap delta forest plot
-boot = pd.read_csv(ROOT / "statistical_reports/paired_bootstrap_test_results.csv")
-fig, ax = plt.subplots(figsize=(6.6, 2.4))
-ys, labels = [], []
-for i, row in boot.iterrows():
-    comp = row["Comparison (Baseline - Model)"].replace("Conformer vs. ", "")
-    met = row["Metric"]
-    delta = float(row["Observed Δ (Reduction)"].strip("%"))
-    lo, hi = parse_ci(row["Bootstrap 95% CI on Δ"])  # already in percent
-    y = len(boot) - i
-    ax.plot([lo, hi], [y, y], color=C_MAMBA, lw=2)
-    ax.plot(delta, y, "o", color=C_MAMBA, ms=5)
-    labels.append(f"{comp} — {met}")
-    ys.append(y)
-ax.axvline(0, color="k", lw=0.8)
-ax.set_yticks(ys)
-ax.set_yticklabels(labels, fontsize=7)
-ax.set_xlabel("absolute error reduction vs Conformer (percentage points)")
-ax.set_title("Paired bootstrap (10,000 resamples) — all p < 1e-4", fontsize=9)
-fig.tight_layout()
-fig.savefig(FIG / "fig_bootstrap_delta.pdf", bbox_inches="tight")
-plt.close(fig)
+    # forest plot of deltas (WER/CER/CTC in percentage points)
+    rows = []
+    for label, s in [("BiMamba-2", s2), ("Mamba-3", s3)]:
+        for met in ["WER", "CER", "CTC_CER"]:
+            r = s.loc[met]
+            rows.append((f"{label} — {met}", 100 * r["delta"],
+                         100 * r["ci_lo"], 100 * r["ci_hi"]))
+    fig, ax = plt.subplots(figsize=(6.6, 2.9))
+    for y, (lab, d, lo, hi) in enumerate(rows[::-1], start=1):
+        color = C_MAMBA if lo > 0 else (C_TRF if hi < 0 else "#888888")
+        ax.plot([lo, hi], [y, y], color=color, lw=2)
+        ax.plot(d, y, "o", color=color, ms=5)
+    ax.axvline(0, color="k", lw=0.8)
+    ax.set_yticks(range(1, len(rows) + 1))
+    ax.set_yticklabels([r[0] for r in rows[::-1]], fontsize=7)
+    ax.set_xlabel("Δ vs Conformer (percentage points; >0 favours Mamba)")
+    ax.set_title("Paired bootstrap, 10,000 resamples (blue: Mamba better, "
+                 "red: Conformer better, grey: n.s.)", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(FIG / "fig_bootstrap_delta.pdf", bbox_inches="tight")
+    plt.close(fig)
+else:
+    print("NOTE: dissertation/stats/*.csv not found — run cluster/run_all.sh "
+          "and pull; skipping fig_phase2_metrics + fig_bootstrap_delta")
 
 # ------------------------------------------- 7. latency scaling (log-log)
 bench = json.loads((ROOT / "benchmark_out/benchmark_complexity_report.json").read_text())
