@@ -959,6 +959,20 @@ unambiguously resolve the intended word, and it explains why SemER stays
 near 0.09--0.10 even when CER is 0.4--0.6: \emph{meaning survives
 character-level errors}.
 
+One counter-intuitive pattern deserves explicit note: for all three models
+the final CER sits \emph{above} the pre-decoder CTC error (Conformer
+0.511\,$\to$\,0.690; BiMamba-2 0.514\,$\to$\,0.582; Mamba-3
+0.539\,$\to$\,0.609; Fig.~\ref{fig:erroranalysis}d, where most sentences
+lie above the no-gain diagonal). The LLM stage therefore \emph{increases}
+raw character error even as it improves fluency: it replaces partially
+correct character streams with fluent but differently worded Spanish. Since
+SemER stays at 0.09--0.10 throughout, the trade is deliberate in effect if
+not in design---character fidelity is exchanged for semantic plausibility.
+A character-level metric alone would penalise the very mechanism that makes
+the output readable; SemER is the necessary complement, and future
+decoding-stage work should optimise the trade explicitly rather than
+assuming the decoder monotonically helps.
+
 \begin{table}[htbp]
 \centering
 \caption{Qualitative decoding examples (Mamba-3 hybrid, Study 3). CTC shows
