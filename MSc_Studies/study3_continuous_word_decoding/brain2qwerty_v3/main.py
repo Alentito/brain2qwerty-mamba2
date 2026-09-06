@@ -517,12 +517,6 @@ def main(argv: list[str] | None = None) -> None:
     p_eval.add_argument("--core", choices=CORE_CHOICES, default="mamba3_hybrid_stabilized")
     p_eval.add_argument("--frontend", choices=FRONTEND_CHOICES, default="conv")
     p_eval.add_argument("--ckpt", required=True, help="checkpoint to evaluate")
-    p_eval.add_argument("--subjects", nargs="+", default=None,
-                        help="subjects (must match training, e.g. S15 S16 S6)")
-    p_eval.add_argument("--tag", default=None,
-                        help="output directory suffix tag (must match training, "
-                             "so eval writes into the same run directory)")
-    p_eval.add_argument("--devices", type=int, default=None, help="GPU count")
     add_wandb_args(p_eval)
 
     # -- cache ---------------------------------------------------------------

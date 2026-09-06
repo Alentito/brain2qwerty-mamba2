@@ -141,12 +141,7 @@ def main():
     lm = CharNGramLM(n=6, alpha=0.01)
     lm.fit(base_sentences)
     
-    import os
-    cache = Path(os.environ.get("BRAIN2QWERTY_CACHE", Path.home() / ".cache" / "b2q_v1mamba"))
-    results_dir = Path(os.environ.get("BRAIN2QWERTY_RESULTS", cache / "results"))
-    if not results_dir.exists():
-        # Kelvin-2 cluster layout
-        results_dir = Path.home() / "sharedscratch/B2Q/cache_v1mamba/results"
+    results_dir = Path.home() / ".cache/b2q_v1mamba/results"
     
     models = {
         "Transformer Control (lr=1e-4)": results_dir / "small-transformer-S15-S16-S6-lr1e4/callbacks/test_all_sentences.json",
